@@ -32,6 +32,9 @@ app.get('/oauth', async (req, res) => {
   console.log('Получен код авторизации:', code.slice(0, 10) + '...');
 
   try {
+    console.log('🔍 Отправляю запрос с параметрами:');
+console.log('  CLIENT_ID =', process.env.AMO_CLIENT_ID);
+console.log('  REDIRECT_URI =', process.env.AMO_REDIRECT_URI);
     const tokenData = await amo.exchangeCodeForToken(code);
     console.log('✅ Получен access_token:', tokenData.access_token);
     console.log('  refresh_token:', tokenData.refresh_token);
