@@ -1,0 +1,14 @@
+{
+  "name": "planfix-amomessenger-integration",
+  "version": "1.0.0",
+  "description": "Интеграция Планфикс и amoMessenger: сообщения пользователя попадают в задачи Планфикс, ответы поддержки возвращаются в amoMessenger",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "axios": "^1.7.2",
+    "dotenv": "^16.4.5"
+  }
+}
