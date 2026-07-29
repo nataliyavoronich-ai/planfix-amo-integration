@@ -182,19 +182,32 @@ async function createTask({ contactId, amoUserId, amoUserName, text, attachments
 }
 
 // -----------------------------------------------------------
-// ПОЛУЧЕНИЕ amoUserId ИЗ ЗАДАЧИ ПО ЕЁ ID (исправлено)
+// ПОЛУЧЕНИЕ amoUserId ИЗ ЗАДАЧИ ПО ЕЁ ID (через /task/list)
 // -----------------------------------------------------------
 async function getAmoUserIdFromTask(taskId) {
   try {
     const body = {
-      id: Number(taskId),
+      offset: 0,
+      pageSize: 1,
+      filters: [
+        {
+          type: 2,               // фильтр по ID задачи
+          operator: 'equal',
+          value: Number(taskId),
+        },
+      ],
       fields: 'id,name,customFields',
     };
-    console.log(`📤 Запрашиваем задачу ${taskId} через POST /task/get`);
-    const res = await restClient.post('/task/get', body);
+    console.log(`📤 Запрашиваем задачу ${taskId} через POST /task/list`);
+    const res = await restClient.post('/task/list', body);
     console.log('🔍 Получена задача:', JSON.stringify(res.data, null, 2));
 
-    const task = res.data.task || res.data;
+    const tasks = res.data.tasks || [];
+    if (tasks.length === 0) {
+      console.warn(`⚠️ Задача ${taskId} не найдена`);
+      return null;
+    }
+    const task = tasks[0];
     const customFields = task.customFields || [];
     // Ищем поле с именем "amoUserId"
     const field = customFields.find(f => f.field?.name === 'amoUserId');
