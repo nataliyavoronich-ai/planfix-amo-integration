@@ -1,16 +1,7 @@
 // ============================================================
 //  МОДУЛЬ РАБОТЫ С amoMessenger
-//
-//  ВАЖНО ДЛЯ ВАС:
-//  API amoMessenger закрытый — доступ к точной документации
-//  открывается только после регистрации партнёром на портале
-//  https://developers.amo.tm  (см. README.md, шаг 4).
-//
-//  Поэтому ниже — рабочий каркас (структура) с местами,
-//  помеченными как TODO. Их нужно заполнить точными
-//  названиями полей и адресами методов из вашего личного
-//  кабинета разработчика (там будет пример запроса и ответа
-//  прямо на понятном языке, как в конструкторе).
+//  Основано на официальном туториале и примерах кода
+//  (webhook.php, amo_authorization.php) с портала разработчика.
 // ============================================================
  
 const axios = require('axios');
@@ -66,15 +57,24 @@ async function validateToken(accessToken) {
 // на наш /webhook/amomessenger при получении сообщения)
 // -----------------------------------------------------------
 function parseIncomingMessage(body) {
-  // ВРЕМЕННО: печатаем весь запрос целиком, чтобы увидеть
-  // настоящий формат amoMessenger. Уберём эту строку, когда
-  // разберёмся с полями ниже.
-  console.log('RAW BODY от amoMessenger:', JSON.stringify(body, null, 2));
+  // Реальная структура вебхука amoMessenger (из официального
+  // примера webhook.php):
+  // body._embedded.message               — само сообщение
+  // body._embedded.conversation_identity — "адрес" переписки,
+  //                                        нужен для ответа
+  // body._embedded.context.company_id    — id компании
+  const message = body?._embedded?.message || {};
+  const conversationIdentity = body?._embedded?.conversation_identity || {};
  
   return {
-    userId: body.from?.id || body.userId || body.sender_id,
-    userName: body.from?.name || body.userName || body.sender_name,
-    text: body.message?.text || body.text,
+    // Именно conversation_identity.direct_id используется потом
+    // в адресе запроса на отправку сообщения (см. sendMessage).
+    // Поэтому храним его в Планфикс как "amoMessenger ID".
+    userId: conversationIdentity.direct_id,
+    userName: message.author?.name || message.from?.name || null,
+    text: message.text,
+    messageId: message.id,
+    conversationIdentity,
     raw: body,
   };
 }
@@ -82,19 +82,15 @@ function parseIncomingMessage(body) {
 // -----------------------------------------------------------
 // Отправка сообщения пользователю amoMessenger
 // -----------------------------------------------------------
-// Реальный метод (из документации amoMessenger):
-//   POST https://api.amo.io/v1.3/direct/{USER_ID}/sendMessage
-// {USER_ID} — это ID получателя (того, кто писал боту),
-// подставляется прямо в адрес запроса, а не в тело.
-// В .env для AMO_API_BASE_URL укажите: https://api.amo.io/v1.3
-async function sendMessage(userId, text) {
-  const url = `${API_BASE_URL}/direct/${userId}/sendMessage`;
+// Точный формат из официального примера (webhook.php):
+//   POST https://api.amo.io/v1.3/direct/{direct_id}/sendMessage
+//   body: { text }  (либо ещё attachments/reply_to при желании)
+// {direct_id} — это то же значение, что мы сохранили как
+// "amoMessenger ID" в задаче Планфикс (userId из parseIncomingMessage).
+async function sendMessage(directId, text) {
+  const url = `${API_BASE_URL}/direct/${directId}/sendMessage`;
  
-  // TODO: сверьте название поля с текстом сообщения по примеру
-  // запроса в документации — ниже наиболее вероятный вариант.
-  const body = {
-    text,
-  };
+  const body = { text };
  
   const res = await axios.post(url, body, {
     headers: {
