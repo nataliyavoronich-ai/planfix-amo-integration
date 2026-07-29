@@ -12,6 +12,10 @@ app.use(express.json());
 
 const SECRET = process.env.WEBHOOK_SECRET;
 
+// Простой кеш для предотвращения дублирования исходящих сообщений
+// (храним ID комментариев, которые уже были обработаны)
+const processedComments = new Set();
+
 function checkSecret(req, res, next) {
   if (req.query.secret !== SECRET) {
     return res.status(403).send('forbidden');
@@ -83,8 +87,8 @@ app.post('/webhook/amomessenger', checkSecret, async (req, res) => {
       }
     }
 
-    // Находим или создаём контакт по имени
-    const contactId = await planfix.findOrCreateContactId(realUserName);
+    // Находим или создаём контакт по внешнему коду (amoUserId)
+    const contactId = await planfix.findOrCreateContactId(userId, realUserName);
     console.log(`✅ Контакт ID: ${contactId}`);
 
     const openTask = await planfix.findOpenTaskByContactId(contactId);
@@ -119,6 +123,17 @@ app.post('/webhook/planfix', checkSecret, async (req, res) => {
   console.log('  Body:', JSON.stringify(req.body, null, 2));
 
   try {
+    // Генерируем уникальный ключ для этого комментария
+    const taskId = req.headers['x-planfix-task'];
+    const commentId = req.body.commentId || req.body.id || req.body.comment_id;
+    const uniqueKey = `${taskId}_${commentId || Date.now()}`;
+
+    // Проверяем, не обрабатывали ли уже этот комментарий
+    if (processedComments.has(uniqueKey)) {
+      console.log(`⚠️ Дублирующий вебхук для ${uniqueKey}, игнорируем`);
+      return res.sendStatus(200);
+    }
+
     // 1. Берём amoUserId из тела запроса
     let amoUserId = req.body.amoUserId || null;
     let commentText = req.body.commentText || req.body.comment || req.body.text || req.body.message || req.body.description;
@@ -139,6 +154,9 @@ app.post('/webhook/planfix', checkSecret, async (req, res) => {
       console.warn('⚠️ После очистки HTML текст пуст');
       return res.sendStatus(200);
     }
+
+    // Отмечаем комментарий как обработанный
+    processedComments.add(uniqueKey);
 
     console.log(`📤 Отправляем сообщение пользователю ${amoUserId}: ${cleanText}`);
     await amo.sendMessage(amoUserId, cleanText);
