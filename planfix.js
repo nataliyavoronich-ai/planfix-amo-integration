@@ -62,7 +62,7 @@ async function findContactByAmoUserId(amoUserId) {
 }
 
 // -----------------------------------------------------------
-// СОЗДАНИЕ НОВОГО КОНТАКТА (исправлено: fieldId вместо field)
+// СОЗДАНИЕ НОВОГО КОНТАКТА (исправлено с логированием)
 // -----------------------------------------------------------
 async function createContact(amoUserId, amoUserName) {
   const body = {
@@ -70,15 +70,30 @@ async function createContact(amoUserId, amoUserName) {
     name: amoUserName || `amoMessenger ${amoUserId}`,
     customFieldData: [
       {
-        fieldId: Number(CONTACT_FIELD_ID),   // <-- исправлено!
+        field: { id: Number(CONTACT_FIELD_ID) },   // <-- правильный формат
         value: String(amoUserId),
       },
     ],
   };
+  // Удаляем undefined поля
   Object.keys(body).forEach(key => body[key] === undefined && delete body[key]);
-  const res = await restClient.post('/contact/', body);
-  console.log('RAW ОТВЕТ Планфикс при создании контакта:', JSON.stringify(res.data, null, 2));
-  return res.data;
+
+  console.log('📤 Отправляем запрос на создание контакта:', JSON.stringify(body, null, 2));
+
+  try {
+    const res = await restClient.post('/contact/', body);
+    console.log('RAW ОТВЕТ Планфикс при создании контакта:', JSON.stringify(res.data, null, 2));
+    return res.data;
+  } catch (err) {
+    if (err.response) {
+      console.error('❌ Ошибка при создании контакта:');
+      console.error('  Статус:', err.response.status);
+      console.error('  Данные ответа:', JSON.stringify(err.response.data, null, 2));
+    } else {
+      console.error('❌ Ошибка:', err.message);
+    }
+    throw err;
+  }
 }
 
 // -----------------------------------------------------------
