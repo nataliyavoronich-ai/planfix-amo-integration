@@ -55,14 +55,22 @@ async function findContactByName(name) {
 }
 
 // -----------------------------------------------------------
-// СОЗДАНИЕ НОВОГО КОНТАКТА (БЕЗ ШАБЛОНА)
+// СОЗДАНИЕ НОВОГО КОНТАКТА (с шаблоном, если задан)
 // -----------------------------------------------------------
 async function createContact(amoUserName) {
   const cleanName = (amoUserName || 'Пользователь amoMessenger').trim();
   const body = { name: cleanName };
-  // Шаблон не передаём
 
-  console.log('📤 Создаём контакт (без шаблона):', JSON.stringify(body, null, 2));
+  // Если в переменной окружения задан ID шаблона – используем его
+  const templateId = process.env.PLANFIX_CONTACT_TEMPLATE_ID;
+  if (templateId) {
+    body.template = { id: Number(templateId) };
+    console.log(`📤 Создаём контакт с шаблоном ID ${templateId}`);
+  } else {
+    console.log('📤 Создаём контакт без шаблона (может вызвать ошибку, если шаблон обязателен)');
+  }
+
+  console.log('📤 Тело запроса:', JSON.stringify(body, null, 2));
 
   try {
     const res = await restClient.post('/contact/', body);
@@ -73,7 +81,6 @@ async function createContact(amoUserName) {
     throw err;
   }
 }
-
 // -----------------------------------------------------------
 // НАЙТИ ИЛИ СОЗДАТЬ КОНТАКТ ПО ИМЕНИ
 // -----------------------------------------------------------
