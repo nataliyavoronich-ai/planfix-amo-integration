@@ -20,7 +20,7 @@ function checkSecret(req, res, next) {
 }
 
 // -----------------------------------------------------------
-// OAuth callback
+// OAuth callback для получения токена amoMessenger
 // -----------------------------------------------------------
 app.get('/oauth', async (req, res) => {
   const { code } = req.query;
@@ -53,7 +53,7 @@ app.get('/oauth', async (req, res) => {
 });
 
 // -----------------------------------------------------------
-// Вебхук от amoMessenger (входящие сообщения)
+// Вебхук от amoMessenger (входящие сообщения + вложения)
 // -----------------------------------------------------------
 app.post('/webhook/amomessenger', checkSecret, async (req, res) => {
   console.log('📩 Полный body от amoMessenger:', JSON.stringify(req.body, null, 2));
@@ -61,11 +61,10 @@ app.post('/webhook/amomessenger', checkSecret, async (req, res) => {
   try {
     const { userId, userName, text, attachments, raw } = amo.parseIncomingMessage(req.body);
 
-    // Если текст пустой, но есть вложения – формируем описание
     let messageText = text;
     if (!messageText && attachments && attachments.length > 0) {
       const names = attachments.map(a => a.name).join(', ');
-      messageText = `Файлы: ${names}`;
+      messageText = `📎 Вложения: ${names}`;
     }
 
     console.log('Входящее сообщение от', userId, ':', messageText);
@@ -74,7 +73,6 @@ app.post('/webhook/amomessenger', checkSecret, async (req, res) => {
       attachments.forEach(a => console.log('  -', a.name, '=>', a.url));
     }
 
-    // Проверяем: если нет текста и нет вложений – игнорируем
     if (!userId || (!messageText && (!attachments || attachments.length === 0))) {
       console.log('Пустое сообщение без содержимого, игнорируем');
       return res.sendStatus(200);
@@ -97,11 +95,9 @@ app.post('/webhook/amomessenger', checkSecret, async (req, res) => {
     const openTask = await planfix.findOpenTaskByContactId(contactId);
 
     if (openTask) {
-      // Добавляем комментарий с текстом и вложениями (если нужны)
       await planfix.addComment(openTask.id, messageText);
       console.log('➕ Комментарий добавлен в задачу #' + openTask.id);
     } else {
-      // Создаём новую задачу
       const newTask = await planfix.createTask({
         contactId,
         amoUserId: userId,
@@ -120,28 +116,68 @@ app.post('/webhook/amomessenger', checkSecret, async (req, res) => {
 });
 
 // -----------------------------------------------------------
-// Вебхук от Planfix (ответы из задач)
+// Вебхук от Planfix (ответы из задач → в amoMessenger)
 // -----------------------------------------------------------
 app.post('/webhook/planfix', checkSecret, async (req, res) => {
+  console.log('📩 Полный запрос от Планфикса:');
+  console.log('  Headers:', req.headers);
+  console.log('  Body:', JSON.stringify(req.body, null, 2));
+  console.log('  Query:', req.query);
+  console.log('  Params:', req.params);
+
   try {
-    const { amoUserId, commentText } = req.body;
+    let amoUserId = null;
+    let commentText = null;
+
+    // Пытаемся извлечь amoUserId из разных возможных мест
+    if (req.body.amoUserId) {
+      amoUserId = req.body.amoUserId;
+    } else if (req.body.userId) {
+      amoUserId = req.body.userId;
+    } else if (req.body.contactId) {
+      amoUserId = req.body.contactId;
+    } else if (req.body.data && req.body.data.amoUserId) {
+      amoUserId = req.body.data.amoUserId;
+    } else if (req.body.customFields && Array.isArray(req.body.customFields)) {
+      const field = req.body.customFields.find(f => f.fieldId === process.env.PLANFIX_AMO_CONTACT_FIELD_ID);
+      if (field) amoUserId = field.value;
+    }
+
+    // Извлечение текста комментария
+    if (req.body.commentText) {
+      commentText = req.body.commentText;
+    } else if (req.body.comment) {
+      commentText = req.body.comment;
+    } else if (req.body.text) {
+      commentText = req.body.text;
+    } else if (req.body.message) {
+      commentText = req.body.message;
+    } else if (req.body.description) {
+      commentText = req.body.description;
+    } else if (req.body.commentData && req.body.commentData.text) {
+      commentText = req.body.commentData.text;
+    }
 
     if (!amoUserId || !commentText) {
-      console.log('Нет amoUserId или commentText в запросе Planfix:', req.body);
+      console.warn('⚠️ Не удалось извлечь amoUserId или commentText из запроса Планфикса.');
+      console.warn('  Доступные поля:', Object.keys(req.body));
       return res.sendStatus(200);
     }
 
+    console.log(`📤 Отправляем сообщение пользователю ${amoUserId}: ${commentText}`);
     await amo.sendMessage(amoUserId, commentText);
-    console.log('📤 Ответ отправлен пользователю', amoUserId);
+    console.log('✅ Сообщение успешно отправлено в amoMessenger');
 
     res.sendStatus(200);
   } catch (err) {
-    console.error('❌ Ошибка обработки уведомления из Planfix:', err.message);
-    res.sendStatus(500);
+    console.error('❌ Ошибка обработки уведомления из Планфикс:', err.message);
+    res.sendStatus(200); // всегда отвечаем 200, чтобы Планфикс не переотправлял
   }
 });
 
+// -----------------------------------------------------------
 // Проверка работоспособности
+// -----------------------------------------------------------
 app.get('/', (req, res) => {
   res.send('Интеграция работает 🚀');
 });
