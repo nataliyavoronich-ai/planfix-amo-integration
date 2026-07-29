@@ -135,7 +135,7 @@ async function uploadFileToAmo(fileStream, fileName) {
       },
     });
     console.log('✅ Файл загружен в amoMessenger:', res.data);
-    // В ответе приходит file_id (или id/attachment_id)
+    // В ответе приходит file_id
     return res.data.file_id || res.data.id || res.data.attachment_id;
   } catch (err) {
     console.error('❌ Ошибка загрузки файла в amoMessenger:', err.response?.data || err.message);
@@ -161,8 +161,9 @@ async function sendMessageWithFile(userId, text, fileUrl, fileName) {
     const url = `${API_BASE_URL}/direct/${userId}/sendMessage`;
     const payload = {
       text: text || '',
-      files: [fileId],   // Используем поле files для вложений
+      attachments: [{ id: fileId }],   // <-- ИСПРАВЛЕНО: attachments с массивом объектов { id }
     };
+    console.log('📤 Отправляем payload в amoMessenger:', JSON.stringify(payload, null, 2));
     const res = await axios.post(url, payload, {
       headers: { Authorization: `Bearer ${ACCESS_TOKEN}` },
     });
@@ -170,6 +171,10 @@ async function sendMessageWithFile(userId, text, fileUrl, fileName) {
     return res.data;
   } catch (err) {
     console.error('❌ Ошибка отправки сообщения с файлом:', err.message);
+    if (err.response) {
+      console.error('  Статус:', err.response.status);
+      console.error('  Данные:', JSON.stringify(err.response.data, null, 2));
+    }
     // Если не удалось отправить с файлом – пробуем только текст
     if (text) {
       console.log('📤 Отправляем только текст как fallback');
@@ -187,14 +192,12 @@ async function sendMessageWithAttachments(userId, text, attachments = []) {
     return sendMessage(userId, text);
   }
 
-  // Обрабатываем только первое вложение (для простоты)
   const first = attachments[0];
   if (first && first.url) {
     const fileName = first.name || 'file';
     return sendMessageWithFile(userId, text, first.url, fileName);
   }
 
-  // Если нет URL – отправляем текст
   return sendMessage(userId, text);
 }
 
