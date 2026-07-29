@@ -5,24 +5,19 @@
 //
 //  НОВАЯ ЛОГИКА:
 //  amoMessenger ID хранится в пользовательском поле НА КОНТАКТЕ
-//  (а не на задаче, как было раньше — там мы упёрлись в
-//  ограничение доступа поля по процессу/шаблону задачи).
-//  Дальше задача связывается с этим контактом через стандартное,
-//  встроенное поле "Контрагент" — оно не кастомное и не требует
-//  отдельных разрешений.
+//  Дальше задача связывается с этим контактом через стандартное
+//  поле "Контрагент" (передаётся как id контакта).
 // ============================================================
 
 const axios = require('axios');
 
-const ACCOUNT = process.env.PLANFIX_ACCOUNT;      // например "zlmktest"
-const DOMAIN = process.env.PLANFIX_DOMAIN || 'planfix.com'; // planfix.com или planfix.ru
-const TOKEN = process.env.PLANFIX_TOKEN;          // токен из Управление аккаунтом -> Доступ к API
+const ACCOUNT = process.env.PLANFIX_ACCOUNT;                // например "zlmktest"
+const DOMAIN = process.env.PLANFIX_DOMAIN || 'planfix.com';  // planfix.com или planfix.ru
+const TOKEN = process.env.PLANFIX_TOKEN;                    // токен API
 const CONTACT_FIELD_ID = process.env.PLANFIX_AMO_CONTACT_FIELD_ID; // ID поля "amoMessenger ID" НА КОНТАКТЕ
-const CONTACT_TEMPLATE_ID = process.env.PLANFIX_CONTACT_TEMPLATE_ID; // ID шаблона, по которому создаётся контакт
-const PROJECT_ID = process.env.PLANFIX_PROJECT_ID; // ID проекта, в который создавать задачи (необязательно)
-
-// ⚠️ ВАШ ID В ПЛАНФИКСЕ (указан как 1) – задача будет назначена на вас
-const RESPONSIBLE_ID = 1; // если ваш ID другой – замените
+const CONTACT_TEMPLATE_ID = process.env.PLANFIX_CONTACT_TEMPLATE_ID; // ID шаблона для создания контакта (необязательно)
+const PROJECT_ID = process.env.PLANFIX_PROJECT_ID;          // ID проекта для задач (необязательно)
+const RESPONSIBLE_ID = 1;                                   // ВАШ ID в Планфиксе (замените, если другой)
 
 const BASE_URL = `https://${ACCOUNT}.${DOMAIN}/rest`;
 
@@ -34,10 +29,7 @@ const client = axios.create({
   },
 });
 
-// Названия статусов, которые считаем "задача завершена".
-// Если в вашем Планфиксе статусы называются иначе — допишите
-// нужные слова через переменную окружения PLANFIX_CLOSED_STATUS_WORDS
-// (через запятую), иначе используются слова по умолчанию.
+// Названия статусов, которые считаем "задача завершена"
 const CLOSED_STATUS_WORDS = (
   process.env.PLANFIX_CLOSED_STATUS_WORDS ||
   'заверш,выполн,закрыт,отмен,done,closed,cancel'
@@ -53,7 +45,7 @@ function isClosedStatus(status) {
 }
 
 // -----------------------------------------------------------
-// Ищем контакт в Планфикс по значению поля "amoMessenger ID"
+// Ищем контакт по amoMessenger ID (пользовательское поле)
 // -----------------------------------------------------------
 async function findContactByAmoUserId(amoUserId) {
   const body = {
@@ -71,7 +63,6 @@ async function findContactByAmoUserId(amoUserId) {
   };
 
   const res = await client.post('/contact/list', body);
-
   console.log('RAW ОТВЕТ Планфикс при поиске контакта:', JSON.stringify(res.data, null, 2));
 
   const contacts = res.data.contacts || [];
@@ -83,7 +74,7 @@ async function findContactByAmoUserId(amoUserId) {
 // -----------------------------------------------------------
 async function createContact(amoUserId, amoUserName) {
   const body = {
-    template: { id: Number(CONTACT_TEMPLATE_ID) },
+    template: CONTACT_TEMPLATE_ID ? { id: Number(CONTACT_TEMPLATE_ID) } : undefined,
     name: amoUserName || `amoMessenger ${amoUserId}`,
     customFieldData: [
       {
@@ -92,16 +83,15 @@ async function createContact(amoUserId, amoUserName) {
       },
     ],
   };
+  // Убираем undefined поля
+  Object.keys(body).forEach(key => body[key] === undefined && delete body[key]);
 
   const res = await client.post('/contact/', body);
-
   console.log('RAW ОТВЕТ Планфикс при создании контакта:', JSON.stringify(res.data, null, 2));
-
   return res.data;
 }
 
-// Находит контакт по amoUserId, а если его ещё нет — создаёт.
-// Возвращает числовой ID контакта в Планфикс.
+// Находит контакт по amoUserId, если нет – создаёт.
 async function findOrCreateContactId(amoUserId, amoUserName) {
   let contact = await findContactByAmoUserId(amoUserId);
   if (!contact) {
@@ -111,9 +101,7 @@ async function findOrCreateContactId(amoUserId, amoUserName) {
 }
 
 // -----------------------------------------------------------
-// Ищем среди задач ту, где данный контакт указан как
-// контрагент (Контрагент — встроенное поле, тип фильтра 7)
-// и задача ещё не завершена.
+// Ищем открытую задачу, где контакт указан как "Контрагент"
 // -----------------------------------------------------------
 async function findOpenTaskByContactId(contactId) {
   const body = {
@@ -130,7 +118,6 @@ async function findOpenTaskByContactId(contactId) {
   };
 
   const res = await client.post('/task/list', body);
-
   console.log('RAW ОТВЕТ Планфикс при поиске открытой задачи:', JSON.stringify(res.data, null, 2));
 
   const tasks = res.data.tasks || [];
@@ -139,16 +126,19 @@ async function findOpenTaskByContactId(contactId) {
 }
 
 // -----------------------------------------------------------
-// Создаём новую задачу, привязанную к контакту как контрагенту
+// Создаём задачу, привязанную к контакту
 // -----------------------------------------------------------
 async function createTask({ contactId, amoUserId, amoUserName, text }) {
   const body = {
     name: `Обращение из amoMessenger: ${amoUserName || amoUserId}`,
     description: text,
-    project: PROJECT_ID ? { id: Number(PROJECT_ID) } : undefined,
-    contact: { id: contactId },
-    responsible: { id: RESPONSIBLE_ID }, // <-- добавлено обязательное поле
+    project: PROJECT_ID ? Number(PROJECT_ID) : undefined,    // просто число
+    contact: contactId,                                     // просто число
+    responsible: RESPONSIBLE_ID,                           // просто число
   };
+
+  // Убираем поля, которые не заданы
+  Object.keys(body).forEach(key => body[key] === undefined && delete body[key]);
 
   try {
     const res = await client.post('/task/', body);
@@ -166,11 +156,11 @@ async function createTask({ contactId, amoUserId, amoUserName, text }) {
   }
 }
 
-// Добавляем комментарий к существующей задаче
+// -----------------------------------------------------------
+// Добавляем комментарий к задаче
+// -----------------------------------------------------------
 async function addComment(taskId, text) {
-  const body = {
-    description: text,
-  };
+  const body = { description: text };
   const res = await client.post(`/task/${taskId}/comments/`, body);
   return res.data;
 }
