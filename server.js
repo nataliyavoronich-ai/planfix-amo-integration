@@ -8,7 +8,12 @@ const planfix = require('./planfix');
 const amo = require('./amomessenger');
 
 const app = express();
+
+// --- ПАРСИНГ ТЕЛА ЗАПРОСА ---
+// Для JSON
 app.use(express.json());
+// Для form-urlencoded (чтобы парсить вложения)
+app.use(express.urlencoded({ extended: true }));
 
 const SECRET = process.env.WEBHOOK_SECRET;
 
@@ -20,7 +25,7 @@ function checkSecret(req, res, next) {
 }
 
 // -----------------------------------------------------------
-// Декодирование HTML-сущностей
+// Декодирование HTML-сущностей ( &nbsp; → пробел, &lt; → < и т.д.)
 // -----------------------------------------------------------
 function decodeHtmlEntities(text) {
   if (!text) return '';
@@ -44,7 +49,7 @@ function decodeHtmlEntities(text) {
   return result.trim();
 }
 
-// Хранилище для предотвращения дублирования
+// Хранилище для предотвращения дублирования исходящих сообщений
 const processedMessages = new Set();
 
 // -----------------------------------------------------------
@@ -66,7 +71,7 @@ app.get('/oauth', async (req, res) => {
 });
 
 // -----------------------------------------------------------
-// Вебхук от amoMessenger (входящие)
+// Вебхук от amoMessenger (входящие сообщения)
 // -----------------------------------------------------------
 app.post('/webhook/amomessenger', checkSecret, async (req, res) => {
   console.log('📩 Полный body от amoMessenger:', JSON.stringify(req.body, null, 2));
@@ -127,28 +132,53 @@ app.post('/webhook/amomessenger', checkSecret, async (req, res) => {
 });
 
 // -----------------------------------------------------------
-// Вебхук от Planfix (исходящие)
+// Вебхук от Planfix (ответы из задач → в amoMessenger)
 // -----------------------------------------------------------
 app.post('/webhook/planfix', checkSecret, async (req, res) => {
   console.log('📩 Полный запрос от Планфикса:');
   console.log('  Headers:', req.headers);
-  console.log('  Body:', JSON.stringify(req.body, null, 2));
+  console.log('  Body:', req.body);
 
   try {
     const taskId = req.headers['x-planfix-task'];
     let amoUserId = req.body.amoUserId || null;
     let commentText = req.body.commentText || req.body.comment || req.body.text || req.body.message || req.body.description || '';
+
+    // --- ИЗВЛЕКАЕМ ВЛОЖЕНИЯ ---
     let attachments = [];
 
-    // --- ИЗВЛЕКАЕМ ВЛОЖЕНИЯ (если есть) ---
+    // 1. Если attachments пришли как массив
     if (req.body.attachments && Array.isArray(req.body.attachments)) {
       attachments = req.body.attachments;
-    } else if (req.body.attachments && typeof req.body.attachments === 'object') {
+    }
+    // 2. Если attachments пришли как объект с индексами (из form-urlencoded)
+    else if (req.body.attachments && typeof req.body.attachments === 'object') {
       const keys = Object.keys(req.body.attachments).filter(k => !isNaN(k));
       attachments = keys.map(k => req.body.attachments[k]);
     }
 
-    // --- ЕСЛИ amoUserId НЕ ПРИШЁЛ, ПОЛУЧАЕМ ИЗ ЗАДАЧИ ---
+    // 3. Если вложения переданы как параметры attachments[0][name], attachments[0][url] (это уже распарсится как объект)
+    // Но могут быть и плоские параметры: attachments[0][name] → ключи в req.body
+    const attachmentNames = {};
+    const attachmentUrls = {};
+    for (const key of Object.keys(req.body)) {
+      const nameMatch = key.match(/^attachments\[(\d+)\]\[name\]$/);
+      const urlMatch = key.match(/^attachments\[(\d+)\]\[url\]$/);
+      if (nameMatch) {
+        attachmentNames[nameMatch[1]] = req.body[key];
+      }
+      if (urlMatch) {
+        attachmentUrls[urlMatch[1]] = req.body[key];
+      }
+    }
+    const indices = new Set([...Object.keys(attachmentNames), ...Object.keys(attachmentUrls)]);
+    for (const idx of indices) {
+      if (attachmentNames[idx] && attachmentUrls[idx]) {
+        attachments.push({ name: attachmentNames[idx], url: attachmentUrls[idx] });
+      }
+    }
+
+    // Если нет amoUserId – пытаемся получить из задачи
     if (!amoUserId && taskId) {
       console.log(`🔍 Получаем amoUserId для задачи ${taskId} через API...`);
       amoUserId = await planfix.getAmoUserIdFromTask(taskId);
@@ -184,7 +214,7 @@ app.post('/webhook/planfix', checkSecret, async (req, res) => {
       return res.sendStatus(200);
     }
 
-    // Защита от дублей
+    // Защита от дублирования
     const messageKey = `${taskId}_${messageToSend.substring(0, 50)}`;
     if (processedMessages.has(messageKey)) {
       console.log(`⚠️ Дублирующее сообщение для задачи ${taskId}, пропускаем`);
