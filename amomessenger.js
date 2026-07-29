@@ -160,9 +160,9 @@ async function sendMessageWithFile(userId, text, fileUrl, fileName) {
     // 3. Отправляем сообщение с вложением
     const url = `${API_BASE_URL}/direct/${userId}/sendMessage`;
     const payload = {
-      text: text || '',
-      attachments: [{ id: fileId }],   // <-- ИСПРАВЛЕНО: attachments с массивом объектов { id }
-    };
+  text: text || '',
+  file_id: fileId,
+};
     console.log('📤 Отправляем payload в amoMessenger:', JSON.stringify(payload, null, 2));
     const res = await axios.post(url, payload, {
       headers: { Authorization: `Bearer ${ACCESS_TOKEN}` },
