@@ -1,8 +1,6 @@
 // ============================================================
 //  МОДУЛЬ РАБОТЫ С ПЛАНФИКС
-//  REST API – для поиска/создания контактов, задач, полей
-//  Webchat API – для отправки сообщений с дополнительными данными
-//  Хранение amoUserId в поле code (внешний код) контакта
+//  Поиск контакта по имени, создание задачи с data_amoUserId
 // ============================================================
 
 const axios = require('axios');
@@ -37,40 +35,39 @@ function isClosedStatus(status) {
 }
 
 // -----------------------------------------------------------
-// ПОИСК КОНТАКТА ПО ВНЕШНЕМУ КОДУ (type=1005)
+// ПОИСК КОНТАКТА ПО ИМЕНИ (точное совпадение)
 // -----------------------------------------------------------
-async function findContactByAmoUserId(amoUserId) {
-  if (!amoUserId) return null;
+async function findContactByName(name) {
+  if (!name) return null;
+  // Очищаем имя от лишних пробелов
+  const cleanName = name.trim();
   const body = {
     offset: 0,
     pageSize: 1,
     filters: [
-      {
-        type: 1005,               // внешний код контакта
-        operator: 'equal',
-        value: String(amoUserId),
-      },
+      { type: 1, operator: 'equal', value: cleanName },
     ],
-    fields: 'id,name,code',
+    fields: 'id,name',
   };
+  console.log('📤 Поиск контакта по имени:', cleanName);
   const res = await restClient.post('/contact/list', body);
-  console.log('RAW ОТВЕТ при поиске контакта по коду:', JSON.stringify(res.data, null, 2));
+  console.log('RAW ОТВЕТ при поиске контакта по имени:', JSON.stringify(res.data, null, 2));
   const contacts = res.data.contacts || [];
   return contacts.length ? contacts[0] : null;
 }
 
 // -----------------------------------------------------------
-// СОЗДАНИЕ НОВОГО КОНТАКТА С ВНЕШНИМ КОДОМ
+// СОЗДАНИЕ НОВОГО КОНТАКТА
 // -----------------------------------------------------------
-async function createContact(amoUserId, amoUserName) {
+async function createContact(amoUserName) {
+  const cleanName = (amoUserName || 'Пользователь amoMessenger').trim();
   const body = {
     template: CONTACT_TEMPLATE_ID ? { id: Number(CONTACT_TEMPLATE_ID) } : undefined,
-    name: amoUserName || `Пользователь ${amoUserId}`,
-    code: String(amoUserId),   // сохраняем внешний код
+    name: cleanName,
   };
   Object.keys(body).forEach(key => body[key] === undefined && delete body[key]);
 
-  console.log('📤 Создаём контакт с кодом:', JSON.stringify(body, null, 2));
+  console.log('📤 Создаём контакт:', JSON.stringify(body, null, 2));
 
   try {
     const res = await restClient.post('/contact/', body);
@@ -83,31 +80,20 @@ async function createContact(amoUserId, amoUserName) {
 }
 
 // -----------------------------------------------------------
-// НАЙТИ ИЛИ СОЗДАТЬ КОНТАКТ ПО amoUserId
+// НАЙТИ ИЛИ СОЗДАТЬ КОНТАКТ ПО ИМЕНИ
 // -----------------------------------------------------------
-async function findOrCreateContactId(amoUserId, amoUserName) {
-  let contact = await findContactByAmoUserId(amoUserId);
+async function findOrCreateContactId(amoUserName) {
+  const cleanName = (amoUserName || '').trim();
+  if (!cleanName) {
+    throw new Error('Имя пользователя не может быть пустым');
+  }
+  let contact = await findContactByName(cleanName);
   if (!contact) {
-    contact = await createContact(amoUserId, amoUserName);
+    contact = await createContact(cleanName);
   } else {
     console.log(`✅ Контакт найден: ID ${contact.id}, имя "${contact.name}"`);
-    // Если имя изменилось – обновим
-    if (amoUserName && contact.name !== amoUserName) {
-      await updateContactName(contact.id, amoUserName);
-    }
   }
   return contact.id;
-}
-
-// -----------------------------------------------------------
-// ОБНОВЛЕНИЕ ИМЕНИ КОНТАКТА (если изменилось)
-// -----------------------------------------------------------
-async function updateContactName(contactId, newName) {
-  const body = { id: contactId, name: newName };
-  console.log(`🔄 Обновляем имя контакта ${contactId} на "${newName}"`);
-  const res = await restClient.post('/contact/', body);
-  console.log('RAW ОТВЕТ при обновлении имени:', JSON.stringify(res.data, null, 2));
-  return res.data;
 }
 
 // -----------------------------------------------------------
@@ -129,7 +115,7 @@ async function findOpenTaskByContactId(contactId) {
 }
 
 // -----------------------------------------------------------
-// ОТПРАВКА СООБЩЕНИЯ В ПЛАНФИКС (Webchat API) с data_amoUserId
+// ОТПРАВКА СООБЩЕНИЯ В ПЛАНФИКС (Webchat API)
 // -----------------------------------------------------------
 async function createTask({ contactId, amoUserId, amoUserName, text, attachments = [] }) {
   const params = new URLSearchParams();
