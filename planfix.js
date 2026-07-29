@@ -1,6 +1,6 @@
 // ============================================================
 //  МОДУЛЬ РАБОТЫ С ПЛАНФИКС
-//  Поиск контакта по имени, создание задачи с data_amoUserId
+//  Используем поле "code" для уникальной идентификации контакта
 // ============================================================
 
 const axios = require('axios');
@@ -35,39 +35,42 @@ function isClosedStatus(status) {
 }
 
 // -----------------------------------------------------------
-// ПОИСК КОНТАКТА ПО ИМЕНИ (точное совпадение)
+// ПОИСК КОНТАКТА ПО ВНЕШНЕМУ КОДУ (code)
 // -----------------------------------------------------------
-async function findContactByName(name) {
-  if (!name) return null;
-  // Очищаем имя от лишних пробелов
-  const cleanName = name.trim();
+async function findContactByAmoUserId(amoUserId) {
+  if (!amoUserId) return null;
   const body = {
     offset: 0,
     pageSize: 1,
     filters: [
-      { type: 1, operator: 'equal', value: cleanName },
+      {
+        type: 1005,              // фильтр по внешнему коду
+        operator: 'equal',
+        value: String(amoUserId),
+      },
     ],
-    fields: 'id,name',
+    fields: 'id,name,code',
   };
-  console.log('📤 Поиск контакта по имени:', cleanName);
+  console.log('📤 Поиск контакта по code:', amoUserId);
   const res = await restClient.post('/contact/list', body);
-  console.log('RAW ОТВЕТ при поиске контакта по имени:', JSON.stringify(res.data, null, 2));
+  console.log('RAW ОТВЕТ при поиске по code:', JSON.stringify(res.data, null, 2));
   const contacts = res.data.contacts || [];
   return contacts.length ? contacts[0] : null;
 }
 
 // -----------------------------------------------------------
-// СОЗДАНИЕ НОВОГО КОНТАКТА
+// СОЗДАНИЕ КОНТАКТА С ЗАДАННЫМ КОДОМ
 // -----------------------------------------------------------
-async function createContact(amoUserName) {
-  const cleanName = (amoUserName || 'Пользователь amoMessenger').trim();
+async function createContact(amoUserId, amoUserName) {
+  const cleanName = (amoUserName || `Пользователь ${amoUserId}`).trim();
   const body = {
     template: CONTACT_TEMPLATE_ID ? { id: Number(CONTACT_TEMPLATE_ID) } : undefined,
     name: cleanName,
+    code: String(amoUserId),   // сохраняем amoUserId в code
   };
   Object.keys(body).forEach(key => body[key] === undefined && delete body[key]);
 
-  console.log('📤 Создаём контакт:', JSON.stringify(body, null, 2));
+  console.log('📤 Создаём контакт с code:', JSON.stringify(body, null, 2));
 
   try {
     const res = await restClient.post('/contact/', body);
@@ -80,18 +83,14 @@ async function createContact(amoUserName) {
 }
 
 // -----------------------------------------------------------
-// НАЙТИ ИЛИ СОЗДАТЬ КОНТАКТ ПО ИМЕНИ
+// НАЙТИ ИЛИ СОЗДАТЬ КОНТАКТ
 // -----------------------------------------------------------
-async function findOrCreateContactId(amoUserName) {
-  const cleanName = (amoUserName || '').trim();
-  if (!cleanName) {
-    throw new Error('Имя пользователя не может быть пустым');
-  }
-  let contact = await findContactByName(cleanName);
+async function findOrCreateContactId(amoUserId, amoUserName) {
+  let contact = await findContactByAmoUserId(amoUserId);
   if (!contact) {
-    contact = await createContact(cleanName);
+    contact = await createContact(amoUserId, amoUserName);
   } else {
-    console.log(`✅ Контакт найден: ID ${contact.id}, имя "${contact.name}"`);
+    console.log(`✅ Контакт найден: ID ${contact.id}, имя "${contact.name}", code ${contact.code}`);
   }
   return contact.id;
 }
@@ -133,8 +132,9 @@ async function createTask({ contactId, amoUserId, amoUserName, text, attachments
   params.append('contactId', String(contactId));
   params.append('contactName', amoUserName || `Пользователь ${amoUserId}`);
   params.append('title', `Обращение из amoMessenger: ${amoUserName || amoUserId}`);
-  params.append('data_amoUserId', String(amoUserId));
+  params.append('data_amoUserId', String(amoUserId)); // для задачи
 
+  // Добавляем вложения (файлы, голосовые и т.п.)
   if (attachments && attachments.length > 0) {
     attachments.forEach(file => {
       if (file.name && file.url) {
