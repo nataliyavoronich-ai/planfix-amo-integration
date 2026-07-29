@@ -66,12 +66,11 @@ async function validateToken(accessToken) {
 // на наш /webhook/amomessenger при получении сообщения)
 // -----------------------------------------------------------
 function parseIncomingMessage(body) {
-  // TODO: замените поля ниже на реальные названия из вебхука
-  // amoMessenger. Проще всего это сделать так:
-  //  1. Временно замените "return {...}" на "console.log(body); return {};"
-  //  2. Разверните сервер, напишите боту тестовое сообщение
-  //  3. Посмотрите в логах сервера (Render -> Logs), какие
-  //     поля реально пришли, и впишите их сюда.
+  // ВРЕМЕННО: печатаем весь запрос целиком, чтобы увидеть
+  // настоящий формат amoMessenger. Уберём эту строку, когда
+  // разберёмся с полями ниже.
+  console.log('RAW BODY от amoMessenger:', JSON.stringify(body, null, 2));
+ 
   return {
     userId: body.from?.id || body.userId || body.sender_id,
     userName: body.from?.name || body.userName || body.sender_name,
@@ -113,3 +112,4 @@ module.exports = {
   exchangeCodeForToken,
   validateToken,
 };
+ 
