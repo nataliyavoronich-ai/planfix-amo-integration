@@ -93,7 +93,6 @@ async function getUserInfo(userUuid) {
       },
     });
 
-    // По документации ответ содержит поле name
     const userName = response.data?.name || null;
     console.log(`✅ Получено имя пользователя: ${userName}`);
     return userName;
@@ -108,28 +107,24 @@ async function getUserInfo(userUuid) {
 }
 
 // -----------------------------------------------------------
-// Разбор входящего сообщения от amoMessenger
+// Разбор входящего сообщения от amoMessenger (исправлено!)
 // -----------------------------------------------------------
 function parseIncomingMessage(body) {
-  let data = body;
-  if (typeof body === 'string') {
-    try {
-      data = JSON.parse(body);
-    } catch (e) {
-      data = body;
-    }
-  }
+  // Пытаемся извлечь данные из вложенной структуры
+  const message = body?._embedded?.message;
+  const author = message?.author;
+  const userId = author?.user_id;
+  const text = message?.text;
 
-  // Универсальный парсинг – пробуем разные возможные поля
-  const userId = data.from?.id || data.userId || data.sender_id || data.user_id;
-  const userName = data.from?.name || data.userName || data.sender_name || data.user_name;
-  const text = data.message?.text || data.text || data.message;
+  // Если структура другая, пробуем старые варианты
+  const fallbackUserId = body.from?.id || body.userId || body.sender_id || body.user_id;
+  const fallbackText = body.message?.text || body.text || body.message;
 
   return {
-    userId,
-    userName,
-    text,
-    raw: data,
+    userId: userId || fallbackUserId,
+    userName: undefined, // имя не приходит, будем запрашивать через API
+    text: text || fallbackText,
+    raw: body,
   };
 }
 
@@ -154,5 +149,5 @@ module.exports = {
   sendMessage,
   exchangeCodeForToken,
   validateToken,
-  getUserInfo,   // <-- добавлено
+  getUserInfo,
 };
