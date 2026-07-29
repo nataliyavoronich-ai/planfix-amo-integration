@@ -167,7 +167,9 @@ app.post('/webhook/planfix', checkSecret, async (req, res) => {
     const cleanText = decodeHtmlEntities(commentText);
 
     // Защита от дублирования
-    const messageKey = `${taskId}_${cleanText.substring(0, 50)}`;
+    // Используем chatId как fallback, если taskId отсутствует
+const chatId = req.body.chatId || amoUserId;
+const messageKey = `${taskId || chatId}_${messageToSend.substring(0, 50)}`;
     if (processedMessages.has(messageKey)) {
       console.log(`⚠️ Дублирующее сообщение для задачи ${taskId}, пропускаем`);
       return res.sendStatus(200);
