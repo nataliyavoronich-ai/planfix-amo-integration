@@ -1,10 +1,5 @@
 // ============================================================
 //  ГЛАВНЫЙ ФАЙЛ СЕРВЕРА
-//  Здесь два "входа":
-//   1) /webhook/amomessenger  — сюда amoMessenger присылает
-//      сообщение, когда сотрудник написал нашему приложению.
-//   2) /webhook/planfix       — сюда Планфикс присылает
-//      уведомление, когда специалист поддержки ответил в задаче.
 // ============================================================
 
 require('dotenv').config();
@@ -15,9 +10,6 @@ const amo = require('./amomessenger');
 const app = express();
 app.use(express.json());
 
-// Простой "секретный ключ" в адресе вебхука, чтобы посторонний
-// не мог слать нам фейковые запросы. Придумайте свою строку
-// и впишите её в .env в переменную WEBHOOK_SECRET.
 const SECRET = process.env.WEBHOOK_SECRET;
 
 function checkSecret(req, res, next) {
@@ -28,9 +20,7 @@ function checkSecret(req, res, next) {
 }
 
 // -----------------------------------------------------------
-// 0. OAuth callback — сюда amoMessenger перенаправляет браузер
-//    после того, как вы подтвердили установку приложения.
-//    Мы забираем ?code=... и обмениваем его на access_token.
+// OAuth callback
 // -----------------------------------------------------------
 app.get('/oauth', async (req, res) => {
   const { code } = req.query;
@@ -39,37 +29,38 @@ app.get('/oauth', async (req, res) => {
     return res.status(400).send('Не пришёл параметр code');
   }
 
-  try {
-    const token = await amo.exchangeCodeForToken(code);
-    console.log('Получен access_token приложения:', token);
+  console.log('Получен код авторизации:', code.slice(0, 10) + '...');
 
-    const context = await amo.validateToken(token.access_token);
+  try {
+    const tokenData = await amo.exchangeCodeForToken(code);
+    console.log('✅ Получен access_token:', tokenData.access_token);
+    console.log('  refresh_token:', tokenData.refresh_token);
+    console.log('  expires_in:', tokenData.expires_in);
+
+    const context = await amo.validateToken(tokenData.access_token);
     console.log('Контекст токена (кто установил приложение):', context);
 
-    // ВАЖНО: сейчас токен просто печатается в логах.
-    // Скопируйте его оттуда (Render -> Logs) и вставьте
-    // в переменную окружения AMO_ACCESS_TOKEN вручную,
-    // затем перезапустите сервис на Render.
-    // Токен со временем "протухает" (см. expires_in) — на
-    // боевом использовании понадобится автообновление через
-    // refresh_token, это отдельный следующий шаг.
-
-    res.send('Приложение подключено. Токен и его контекст — смотрите Logs на Render.');
+    res.send(`
+      <h2>Приложение успешно подключено!</h2>
+      <p>Токен: <code>${tokenData.access_token}</code></p>
+      <p>Скопируйте этот токен и вставьте его в переменную окружения <strong>AMO_ACCESS_TOKEN</strong> на Render, затем перезапустите сервис.</p>
+      <p>Refresh токен: <code>${tokenData.refresh_token}</code> (сохраните его для обновления)</p>
+    `);
   } catch (err) {
-    console.error('Ошибка обмена кода на токен:', err?.response?.data || err.message);
-    res.status(500).send('Не удалось получить токен, смотрите Logs на Render');
+    console.error('❌ Ошибка при обмене кода:');
+    res.status(500).send('Не удалось получить токен. Посмотрите логи на Render для деталей.');
   }
 });
 
 // -----------------------------------------------------------
-// 1. Входящее сообщение ИЗ amoMessenger -> В Планфикс
+// Вебхук от amoMessenger (входящие сообщения)
 // -----------------------------------------------------------
 app.post('/webhook/amomessenger', checkSecret, async (req, res) => {
+  // Логируем полный body для отладки
+  console.log('📩 Полный body от amoMessenger:', JSON.stringify(req.body, null, 2));
+
   try {
-    // ВАЖНО: реальные названия полей в теле запроса нужно
-    // сверить с документацией amoMessenger (личный кабинет
-    // разработчика). Здесь используются условные названия —
-    // поправьте их в файле amomessenger.js -> parseIncomingMessage
+    // Парсим входящее сообщение
     const { userId, userName, text, raw } = amo.parseIncomingMessage(req.body);
 
     console.log('Входящее сообщение от', userId, ':', text);
@@ -79,71 +70,79 @@ app.post('/webhook/amomessenger', checkSecret, async (req, res) => {
       return res.sendStatus(200);
     }
 
-    // Сначала находим (или создаём) контакт в Планфикс,
-    // связанный с этим пользователем amoMessenger
-    const contactId = await planfix.findOrCreateContactId(userId, userName);
+    // --- ПОЛУЧАЕМ РЕАЛЬНОЕ ИМЯ ПОЛЬЗОВАТЕЛЯ ---
+    let realUserName = userName;
+    // Если имя не пришло в вебхуке или равно "Пользователь ...", запрашиваем через API
+    if (!realUserName || realUserName.startsWith('Пользователь ') || realUserName === userId) {
+      console.log(`👤 Имя пользователя не получено из вебхука, запрашиваем через API...`);
+      const nameFromApi = await amo.getUserInfo(userId);
+      if (nameFromApi) {
+        realUserName = nameFromApi;
+        console.log(`✅ Имя получено из API: ${realUserName}`);
+      } else {
+        // Если API не вернул имя, оставляем запасной вариант
+        realUserName = userId;
+        console.log(`⚠️ Не удалось получить имя, используем ID: ${realUserName}`);
+      }
+    }
 
-    // Ищем в Планфиксе открытую (не завершённую) задачу,
-    // где этот контакт указан как контрагент
+    // --- РАБОТА С КОНТАКТОМ И ЗАДАЧЕЙ ---
+    // Находим или создаём контакт (с обновлением имени, если оно изменилось)
+    const contactId = await planfix.findOrCreateContactId(userId, realUserName);
+
+    // Ищем открытую задачу для этого контакта
     const openTask = await planfix.findOpenTaskByContactId(contactId);
 
     if (openTask) {
-      // Задача уже есть -> добавляем сообщение как комментарий
+      // Добавляем комментарий в существующую задачу
       await planfix.addComment(openTask.id, text);
-      console.log('Добавлен комментарий в задачу #' + openTask.id);
+      console.log('➕ Комментарий добавлен в задачу #' + openTask.id);
     } else {
-      // Задачи нет -> создаём новую
+      // Создаём новую задачу
       const newTask = await planfix.createTask({
         contactId,
         amoUserId: userId,
-        amoUserName: userName,
+        amoUserName: realUserName,
         text,
       });
-      console.log('Создана новая задача #' + newTask.id);
+      console.log('🆕 Создана новая задача:', JSON.stringify(newTask));
     }
 
     res.sendStatus(200);
   } catch (err) {
-    console.error('Ошибка обработки сообщения из amoMessenger:', err);
+    console.error('❌ Ошибка обработки сообщения из amoMessenger:', err.message);
     res.sendStatus(500);
   }
 });
 
 // -----------------------------------------------------------
-// 2. Ответ ИЗ Планфикса -> В amoMessenger
+// Вебхук от Planfix (ответы из задач)
 // -----------------------------------------------------------
-// Этот адрес мы укажем в настройке "Уведомление по HTTP"
-// (автоматизация) внутри Планфикса, см. README.md, шаг 6.
 app.post('/webhook/planfix', checkSecret, async (req, res) => {
   try {
-    // Планфикс сам формирует тело запроса по тем полям,
-    // которые вы выберете при настройке уведомления.
-    // Ожидаем, что придут: amoUserId (наше кастомное поле)
-    // и текст комментария.
     const { amoUserId, commentText } = req.body;
 
     if (!amoUserId || !commentText) {
-      console.log('Нет amoUserId или текста комментария в запросе от Планфикс:', req.body);
+      console.log('Нет amoUserId или commentText в запросе Planfix:', req.body);
       return res.sendStatus(200);
     }
 
     await amo.sendMessage(amoUserId, commentText);
-    console.log('Ответ отправлен пользователю', amoUserId, 'в amoMessenger');
+    console.log('📤 Ответ отправлен пользователю', amoUserId);
 
     res.sendStatus(200);
   } catch (err) {
-    console.error('Ошибка обработки уведомления из Планфикс:', err);
+    console.error('❌ Ошибка обработки уведомления из Planfix:', err.message);
     res.sendStatus(500);
   }
 });
 
-// Проверочная страница — открыв её в браузере, вы поймёте,
-// что сервер работает
+// Проверка работоспособности
 app.get('/', (req, res) => {
-  res.send('Интеграция Планфикс <-> amoMessenger работает');
+  res.send('Интеграция работает 🚀');
 });
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log('Сервер запущен на порту ' + PORT);
+  console.log('✅ Сервер запущен на порту ' + PORT);
 });
