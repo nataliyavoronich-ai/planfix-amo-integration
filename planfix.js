@@ -1,6 +1,6 @@
 // ============================================================
 //  МОДУЛЬ РАБОТЫ С ПЛАНФИКС
-//  Поиск контакта по имени (уникально)
+//  Поиск контакта по имени, создание без шаблона
 // ============================================================
 
 const axios = require('axios');
@@ -9,7 +9,6 @@ const ACCOUNT = process.env.PLANFIX_ACCOUNT;
 const DOMAIN = process.env.PLANFIX_DOMAIN || 'planfix.com';
 const TOKEN = process.env.PLANFIX_TOKEN;
 const WEBCHAT_TOKEN = process.env.PLANFIX_WEBCHAT_TOKEN;
-const CONTACT_TEMPLATE_ID = process.env.PLANFIX_CONTACT_TEMPLATE_ID;
 const PROVIDER_ID = 'amomessenger';
 
 const restClient = axios.create({
@@ -56,17 +55,14 @@ async function findContactByName(name) {
 }
 
 // -----------------------------------------------------------
-// СОЗДАНИЕ НОВОГО КОНТАКТА
+// СОЗДАНИЕ НОВОГО КОНТАКТА (БЕЗ ШАБЛОНА)
 // -----------------------------------------------------------
 async function createContact(amoUserName) {
   const cleanName = (amoUserName || 'Пользователь amoMessenger').trim();
-  const body = {
-    template: CONTACT_TEMPLATE_ID ? { id: Number(CONTACT_TEMPLATE_ID) } : undefined,
-    name: cleanName,
-  };
-  Object.keys(body).forEach(key => body[key] === undefined && delete body[key]);
+  const body = { name: cleanName };
+  // Шаблон не передаём
 
-  console.log('📤 Создаём контакт:', JSON.stringify(body, null, 2));
+  console.log('📤 Создаём контакт (без шаблона):', JSON.stringify(body, null, 2));
 
   try {
     const res = await restClient.post('/contact/', body);
