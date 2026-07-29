@@ -46,6 +46,10 @@ async function findOpenTaskByAmoUserId(amoUserId) {
   };
  
   const res = await client.post('/task/list', body);
+ 
+  // ВРЕМЕННО (для отладки): смотрим, что реально нашёл Планфикс
+  console.log('RAW ОТВЕТ Планфикс при поиске открытой задачи:', JSON.stringify(res.data, null, 2));
+ 
   const tasks = res.data.tasks || [];
   return tasks.length ? tasks[0] : null;
 }
@@ -65,7 +69,11 @@ async function createTask({ amoUserId, amoUserName, text }) {
   };
  
   const res = await client.post('/task/', body);
-  return res.data; // содержит { id: ... }
+ 
+  // ВРЕМЕННО (для отладки): смотрим, что реально вернул Планфикс
+  console.log('RAW ОТВЕТ Планфикс при создании задачи:', JSON.stringify(res.data, null, 2));
+ 
+  return res.data;
 }
  
 // Добавляем комментарий к существующей задаче
