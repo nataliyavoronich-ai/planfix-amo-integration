@@ -17,7 +17,7 @@ const OAUTH_BASE_URL = 'https://id.amo.tm';
 // -----------------------------------------------------------
 async function exchangeCodeForToken(code) {
   if (!CLIENT_ID || !CLIENT_SECRET || !REDIRECT_URI) {
-    throw new Error('Отсутствуют переменные окружения');
+    throw new Error('Отсутствуют переменные окружения: CLIENT_ID, CLIENT_SECRET или REDIRECT_URI');
   }
 
   const params = new URLSearchParams();
@@ -27,15 +27,35 @@ async function exchangeCodeForToken(code) {
   params.append('redirect_uri', REDIRECT_URI);
   params.append('code', code);
 
+  console.log('Отправляем запрос на обмен токена:');
+  console.log('  grant_type = authorization_code');
+  console.log('  client_id =', CLIENT_ID);
+  console.log('  client_secret =', CLIENT_SECRET.slice(0, 6) + '...' + CLIENT_SECRET.slice(-4));
+  console.log('  redirect_uri =', REDIRECT_URI);
+  console.log('  code =', code.slice(0, 10) + '... (скрыто)');
+
   try {
     const res = await axios.post(
       `${OAUTH_BASE_URL}/oauth2/access_token`,
       params,
-      { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } }
+      { 
+        headers: { 
+          'Content-Type': 'application/x-www-form-urlencoded',
+          'Accept': 'application/json'
+        } 
+      }
     );
+    console.log('✅ Токен успешно получен');
     return res.data;
   } catch (err) {
-    console.error('❌ Ошибка обмена кода на токен:', err.response?.data || err.message);
+    console.error('❌ Ошибка обмена кода на токен:');
+    if (err.response) {
+      console.error('  Статус:', err.response.status);
+      console.error('  Заголовки:', err.response.headers);
+      console.error('  Тело ответа (причина):', JSON.stringify(err.response.data, null, 2));
+    } else {
+      console.error('  Сообщение:', err.message);
+    }
     throw err;
   }
 }
@@ -45,30 +65,49 @@ async function exchangeCodeForToken(code) {
 // -----------------------------------------------------------
 async function validateToken(accessToken) {
   const res = await axios.get(`${OAUTH_BASE_URL}/oauth2/validate`, {
-    headers: { Authorization: `Bearer ${accessToken}` },
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      Accept: 'application/json',
+    },
   });
   return res.data;
 }
 
 // -----------------------------------------------------------
-// Получение информации о пользователе
+// Получение информации о пользователе по его UUID
 // -----------------------------------------------------------
 async function getUserInfo(userUuid) {
-  if (!userUuid) return null;
+  if (!userUuid) {
+    console.warn('⚠️ getUserInfo вызван без userUuid');
+    return null;
+  }
+
   try {
     const url = `https://api.amo.io/v1.0/users/${userUuid}`;
+    console.log(`🔍 Запрашиваем информацию о пользователе ${userUuid}...`);
+    
     const response = await axios.get(url, {
-      headers: { Authorization: `Bearer ${ACCESS_TOKEN}` },
+      headers: {
+        'Authorization': `Bearer ${ACCESS_TOKEN}`,
+        'Accept': 'application/json',
+      },
     });
-    return response.data?.name || null;
+
+    const userName = response.data?.name || null;
+    console.log(`✅ Получено имя пользователя: ${userName}`);
+    return userName;
   } catch (error) {
-    console.error(`❌ Ошибка при получении пользователя ${userUuid}:`, error.message);
+    console.error(`❌ Ошибка при получении информации о пользователе ${userUuid}:`, error.message);
+    if (error.response) {
+      console.error('  Статус:', error.response.status);
+      console.error('  Данные:', JSON.stringify(error.response.data, null, 2));
+    }
     return null;
   }
 }
 
 // -----------------------------------------------------------
-// Разбор входящего сообщения с вложениями
+// Разбор входящего сообщения от amoMessenger (с поддержкой всех типов вложений)
 // -----------------------------------------------------------
 function parseIncomingMessage(body) {
   const message = body?._embedded?.message;
@@ -77,26 +116,91 @@ function parseIncomingMessage(body) {
   const text = message?.text || '';
 
   let attachments = [];
-  if (message?.attachments) {
+
+  if (message?.attachments && Array.isArray(message.attachments)) {
     for (const file of message.attachments) {
+      // Если есть поле type и соответствующий объект (photo, voice, file, video, audio, document)
       if (file.type && file[file.type]) {
         const sub = file[file.type];
         const link = sub.link || sub.url || '';
+        // Имя: если есть filename – используем его, иначе генерируем из типа
         const name = sub.filename || sub.name || `${file.type}.file`;
-        if (link) attachments.push({ name, url: link });
+        if (link) {
+          attachments.push({ name, url: link });
+        } else {
+          console.warn('⚠️ Вложение без ссылки:', file);
+        }
+      } else {
+        // fallback: рекурсивный поиск в объекте
+        function findFileInfo(obj) {
+          if (!obj || typeof obj !== 'object') return null;
+          if (obj.filename && obj.link) return { name: obj.filename, url: obj.link };
+          if (obj.name && obj.url) return { name: obj.name, url: obj.url };
+          if (obj.link && !obj.filename) {
+            // Если есть только link, генерируем имя
+            const ext = obj.link.split('.').pop().split('?')[0] || 'file';
+            return { name: `file.${ext}`, url: obj.link };
+          }
+          for (const key of Object.keys(obj)) {
+            if (Array.isArray(obj[key])) {
+              for (const item of obj[key]) {
+                const result = findFileInfo(item);
+                if (result) return result;
+              }
+            } else if (typeof obj[key] === 'object' && obj[key] !== null) {
+              const result = findFileInfo(obj[key]);
+              if (result) return result;
+            }
+          }
+          return null;
+        }
+        const info = findFileInfo(file);
+        if (info) {
+          attachments.push(info);
+        } else {
+          // Если ничего не найдено, добавляем с заглушкой
+          const directName = file.name || file.filename || 'file';
+          const directUrl = file.url || file.link || '';
+          if (directUrl) {
+            attachments.push({ name: directName, url: directUrl });
+          }
+        }
       }
     }
   }
-  return { userId, userName: undefined, text, attachments, raw: body };
+
+  // fallback на случай, если attachments в другом месте
+  if (attachments.length === 0 && body?.attachments) {
+    attachments = body.attachments.map(file => {
+      if (file.type && file[file.type]) {
+        const sub = file[file.type];
+        return { name: sub.filename || `${file.type}.file`, url: sub.link || sub.url || '' };
+      }
+      return { name: file.name || file.filename || 'file', url: file.url || file.link || '' };
+    }).filter(a => a.url);
+  }
+
+  return {
+    userId,
+    userName: undefined,
+    text,
+    attachments,
+    raw: body,
+  };
 }
 
 // -----------------------------------------------------------
-// Отправка сообщения
+// Отправка сообщения пользователю
 // -----------------------------------------------------------
 async function sendMessage(userId, text) {
   const url = `${API_BASE_URL}/direct/${userId}/sendMessage`;
-  const res = await axios.post(url, { text }, {
-    headers: { Authorization: `Bearer ${ACCESS_TOKEN}` },
+  const body = { text };
+
+  const res = await axios.post(url, body, {
+    headers: {
+      Authorization: `Bearer ${ACCESS_TOKEN}`,
+      'Content-Type': 'application/json',
+    },
   });
   return res.data;
 }
