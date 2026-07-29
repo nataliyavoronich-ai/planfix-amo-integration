@@ -21,6 +21,9 @@ const CONTACT_FIELD_ID = process.env.PLANFIX_AMO_CONTACT_FIELD_ID; // ID пол�
 const CONTACT_TEMPLATE_ID = process.env.PLANFIX_CONTACT_TEMPLATE_ID; // ID шаблона, по которому создаётся контакт
 const PROJECT_ID = process.env.PLANFIX_PROJECT_ID; // ID проекта, в который создавать задачи (необязательно)
 
+// ⚠️ ВАШ ID В ПЛАНФИКСЕ (указан как 1) – задача будет назначена на вас
+const RESPONSIBLE_ID = 1; // если ваш ID другой – замените
+
 const BASE_URL = `https://${ACCOUNT}.${DOMAIN}/rest`;
 
 const client = axios.create({
@@ -144,13 +147,23 @@ async function createTask({ contactId, amoUserId, amoUserName, text }) {
     description: text,
     project: PROJECT_ID ? { id: Number(PROJECT_ID) } : undefined,
     contact: { id: contactId },
+    responsible: { id: RESPONSIBLE_ID }, // <-- добавлено обязательное поле
   };
 
-  const res = await client.post('/task/', body);
-
-  console.log('RAW ОТВЕТ Планфикс при создании задачи:', JSON.stringify(res.data, null, 2));
-
-  return res.data;
+  try {
+    const res = await client.post('/task/', body);
+    console.log('✅ Задача создана:', JSON.stringify(res.data, null, 2));
+    return res.data;
+  } catch (err) {
+    if (err.response) {
+      console.error('❌ Ошибка при создании задачи:');
+      console.error('  Статус:', err.response.status);
+      console.error('  Данные ответа:', JSON.stringify(err.response.data, null, 2));
+    } else {
+      console.error('❌ Ошибка:', err.message);
+    }
+    throw err;
+  }
 }
 
 // Добавляем комментарий к существующей задаче
