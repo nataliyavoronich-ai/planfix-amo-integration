@@ -39,7 +39,7 @@ function isClosedStatus(status) {
 }
 
 // -----------------------------------------------------------
-// ПОИСК КОНТАКТА ПО ИМЕНИ (упрощённо – без кастомных полей)
+// ПОИСК КОНТАКТА ПО ИМЕНИ
 // -----------------------------------------------------------
 async function findContactByName(name) {
   const body = {
@@ -47,7 +47,7 @@ async function findContactByName(name) {
     pageSize: 10,
     filters: [
       {
-        type: 1,               // фильтр по имени
+        type: 1,
         operator: 'equal',
         value: name,
       },
@@ -61,7 +61,7 @@ async function findContactByName(name) {
 }
 
 // -----------------------------------------------------------
-// СОЗДАНИЕ НОВОГО КОНТАКТА (только имя, без полей)
+// СОЗДАНИЕ НОВОГО КОНТАКТА (только имя)
 // -----------------------------------------------------------
 async function createContact(amoUserName) {
   const body = {
@@ -94,7 +94,6 @@ async function createContact(amoUserName) {
 async function findOrCreateContactId(amoUserName) {
   let contact = await findContactByName(amoUserName);
   if (!contact) {
-    // Если контакт не найден по имени, создаём новый
     contact = await createContact(amoUserName);
   } else {
     console.log(`✅ Контакт найден: ID ${contact.id}, имя "${contact.name}"`);
@@ -183,16 +182,22 @@ async function createTask({ contactId, amoUserId, amoUserName, text, attachments
 }
 
 // -----------------------------------------------------------
-// ПОЛУЧЕНИЕ amoUserId ИЗ ЗАДАЧИ ПО ЕЁ ID
+// ПОЛУЧЕНИЕ amoUserId ИЗ ЗАДАЧИ ПО ЕЁ ID (исправлено)
 // -----------------------------------------------------------
 async function getAmoUserIdFromTask(taskId) {
   try {
-    const res = await restClient.get(`/task/${taskId}?fields=id,name,customFields`);
+    const body = {
+      id: Number(taskId),
+      fields: 'id,name,customFields',
+    };
+    console.log(`📤 Запрашиваем задачу ${taskId} через POST /task/get`);
+    const res = await restClient.post('/task/get', body);
     console.log('🔍 Получена задача:', JSON.stringify(res.data, null, 2));
 
+    const task = res.data.task || res.data;
+    const customFields = task.customFields || [];
     // Ищем поле с именем "amoUserId"
-    const customFields = res.data.task?.customFields || [];
-    const field = customFields.find(f => f.field?.name === 'amoUserId' || f.field?.id === process.env.PLANFIX_AMO_TASK_FIELD_ID);
+    const field = customFields.find(f => f.field?.name === 'amoUserId');
     if (field) {
       console.log(`✅ Найдено поле amoUserId: ${field.value}`);
       return field.value;
@@ -201,6 +206,10 @@ async function getAmoUserIdFromTask(taskId) {
     return null;
   } catch (err) {
     console.error('❌ Ошибка при получении задачи:', err.message);
+    if (err.response) {
+      console.error('  Статус:', err.response.status);
+      console.error('  Данные:', JSON.stringify(err.response.data, null, 2));
+    }
     return null;
   }
 }
