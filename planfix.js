@@ -18,6 +18,7 @@ const ACCOUNT = process.env.PLANFIX_ACCOUNT;      // например "zlmktest"
 const DOMAIN = process.env.PLANFIX_DOMAIN || 'planfix.com'; // planfix.com или planfix.ru
 const TOKEN = process.env.PLANFIX_TOKEN;          // токен из Управление аккаунтом -> Доступ к API
 const CONTACT_FIELD_ID = process.env.PLANFIX_AMO_CONTACT_FIELD_ID; // ID поля "amoMessenger ID" НА КОНТАКТЕ
+const CONTACT_TEMPLATE_ID = process.env.PLANFIX_CONTACT_TEMPLATE_ID; // ID шаблона, по которому создаётся контакт
 const PROJECT_ID = process.env.PLANFIX_PROJECT_ID; // ID проекта, в который создавать задачи (необязательно)
 
 const BASE_URL = `https://${ACCOUNT}.${DOMAIN}/rest`;
@@ -79,6 +80,7 @@ async function findContactByAmoUserId(amoUserId) {
 // -----------------------------------------------------------
 async function createContact(amoUserId, amoUserName) {
   const body = {
+    template: { id: Number(CONTACT_TEMPLATE_ID) },
     name: amoUserName || `amoMessenger ${amoUserId}`,
     customFieldData: [
       {
