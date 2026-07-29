@@ -93,15 +93,19 @@ app.post('/webhook/amomessenger', checkSecret, async (req, res) => {
       }
     }
 
-    const contactId = await planfix.findOrCreateContactId(userId, realUserName);
+    // Находим или создаём контакт по имени (без кастомных полей)
+    const contactId = await planfix.findOrCreateContactId(realUserName);
+    console.log(`✅ Контакт ID: ${contactId}`);
+
+    // Ищем открытую задачу по контакту
     const openTask = await planfix.findOpenTaskByContactId(contactId);
 
     if (openTask) {
-      // Добавляем комментарий с текстом и вложениями (если нужны)
+      // Добавляем комментарий в существующую задачу
       await planfix.addComment(openTask.id, messageText);
       console.log('➕ Комментарий добавлен в задачу #' + openTask.id);
     } else {
-      // Создаём новую задачу
+      // Создаём новую задачу с полем data_amoUserId
       const newTask = await planfix.createTask({
         contactId,
         amoUserId: userId,
@@ -120,24 +124,46 @@ app.post('/webhook/amomessenger', checkSecret, async (req, res) => {
 });
 
 // -----------------------------------------------------------
-// Вебхук от Planfix (ответы из задач)
+// Вебхук от Planfix (ответы из задач → в amoMessenger)
 // -----------------------------------------------------------
 app.post('/webhook/planfix', checkSecret, async (req, res) => {
-  try {
-    const { amoUserId, commentText } = req.body;
+  console.log('📩 Полный запрос от Планфикса:');
+  console.log('  Headers:', req.headers);
+  console.log('  Body:', JSON.stringify(req.body, null, 2));
 
-    if (!amoUserId || !commentText) {
-      console.log('Нет amoUserId или commentText в запросе Planfix:', req.body);
+  try {
+    // 1. Получаем ID задачи из заголовка
+    const taskId = req.headers['x-planfix-task'];
+    if (!taskId) {
+      console.warn('⚠️ Заголовок x-planfix-task отсутствует');
       return res.sendStatus(200);
     }
 
+    console.log(`🔍 Получаем amoUserId для задачи ${taskId}...`);
+    const amoUserId = await planfix.getAmoUserIdFromTask(taskId);
+
+    if (!amoUserId) {
+      console.warn(`⚠️ Не удалось найти amoUserId для задачи ${taskId}`);
+      return res.sendStatus(200);
+    }
+
+    // 2. Извлекаем текст комментария
+    let commentText = req.body.commentText || req.body.comment || req.body.text || req.body.message || req.body.description;
+    if (!commentText) {
+      console.warn('⚠️ Не удалось извлечь текст комментария. Доступные поля:', Object.keys(req.body));
+      return res.sendStatus(200);
+    }
+
+    // 3. Отправляем сообщение в amoMessenger
+    console.log(`📤 Отправляем сообщение пользователю ${amoUserId}: ${commentText}`);
     await amo.sendMessage(amoUserId, commentText);
-    console.log('📤 Ответ отправлен пользователю', amoUserId);
+    console.log('✅ Сообщение успешно отправлено в amoMessenger');
 
     res.sendStatus(200);
   } catch (err) {
-    console.error('❌ Ошибка обработки уведомления из Planfix:', err.message);
-    res.sendStatus(500);
+    console.error('❌ Ошибка обработки уведомления из Планфикс:', err.message);
+    // Всегда отвечаем 200, чтобы Планфикс не переотправлял
+    res.sendStatus(200);
   }
 });
 
