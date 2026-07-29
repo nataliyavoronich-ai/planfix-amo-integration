@@ -1,6 +1,6 @@
 // ============================================================
 //  МОДУЛЬ РАБОТЫ С ПЛАНФИКС
-//  Поиск контакта по имени, создание без шаблона
+//  Поиск контакта по имени, получение задачи по ID
 // ============================================================
 
 const axios = require('axios');
@@ -55,22 +55,13 @@ async function findContactByName(name) {
 }
 
 // -----------------------------------------------------------
-// СОЗДАНИЕ НОВОГО КОНТАКТА (с шаблоном, если задан)
+// СОЗДАНИЕ КОНТАКТА (без шаблона, только имя)
 // -----------------------------------------------------------
 async function createContact(amoUserName) {
   const cleanName = (amoUserName || 'Пользователь amoMessenger').trim();
   const body = { name: cleanName };
 
-  // Если в переменной окружения задан ID шаблона – используем его
-  const templateId = process.env.PLANFIX_CONTACT_TEMPLATE_ID;
-  if (templateId) {
-    body.template = { id: Number(templateId) };
-    console.log(`📤 Создаём контакт с шаблоном ID ${templateId}`);
-  } else {
-    console.log('📤 Создаём контакт без шаблона (может вызвать ошибку, если шаблон обязателен)');
-  }
-
-  console.log('📤 Тело запроса:', JSON.stringify(body, null, 2));
+  console.log('📤 Создаём контакт:', JSON.stringify(body, null, 2));
 
   try {
     const res = await restClient.post('/contact/', body);
@@ -81,6 +72,7 @@ async function createContact(amoUserName) {
     throw err;
   }
 }
+
 // -----------------------------------------------------------
 // НАЙТИ ИЛИ СОЗДАТЬ КОНТАКТ ПО ИМЕНИ
 // -----------------------------------------------------------
@@ -165,6 +157,38 @@ async function createTask({ contactId, amoUserId, amoUserName, text, attachments
 }
 
 // -----------------------------------------------------------
+// ПОЛУЧЕНИЕ amoUserId ИЗ ЗАДАЧИ ПО ID
+// -----------------------------------------------------------
+async function getAmoUserIdFromTask(taskId) {
+  try {
+    // Используем GET /task/get с параметром id
+    const res = await restClient.get('/task/get', {
+      params: {
+        id: Number(taskId),
+        fields: 'id,name,customFields'
+      }
+    });
+    console.log('🔍 Получена задача:', JSON.stringify(res.data, null, 2));
+    const task = res.data.task || res.data;
+    const customFields = task.customFields || [];
+    const field = customFields.find(f => f.field?.name === 'amoUserId');
+    if (field) {
+      console.log(`✅ Найдено поле amoUserId: ${field.value}`);
+      return field.value;
+    }
+    console.warn('⚠️ Поле amoUserId не найдено в задаче');
+    return null;
+  } catch (err) {
+    console.error('❌ Ошибка при получении задачи:', err.message);
+    if (err.response) {
+      console.error('  Статус:', err.response.status);
+      console.error('  Данные:', JSON.stringify(err.response.data, null, 2));
+    }
+    return null;
+  }
+}
+
+// -----------------------------------------------------------
 // ДОБАВЛЕНИЕ КОММЕНТАРИЯ
 // -----------------------------------------------------------
 async function addComment(taskId, text) {
@@ -177,4 +201,5 @@ module.exports = {
   findOpenTaskByContactId,
   createTask,
   addComment,
+  getAmoUserIdFromTask,
 };
