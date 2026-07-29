@@ -1,6 +1,6 @@
 // ============================================================
 //  МОДУЛЬ РАБОТЫ С ПЛАНФИКС
-//  Поиск контакта по имени, получение задачи по ID
+//  Поиск по имени, создание с шаблоном (если задан)
 // ============================================================
 
 const axios = require('axios');
@@ -10,6 +10,9 @@ const DOMAIN = process.env.PLANFIX_DOMAIN || 'planfix.com';
 const TOKEN = process.env.PLANFIX_TOKEN;
 const WEBCHAT_TOKEN = process.env.PLANFIX_WEBCHAT_TOKEN;
 const PROVIDER_ID = 'amomessenger';
+
+// Если переменная не задана – будет создавать без шаблона (может вызвать ошибку)
+const CONTACT_TEMPLATE_ID = process.env.PLANFIX_CONTACT_TEMPLATE_ID;
 
 const restClient = axios.create({
   baseURL: `https://${ACCOUNT}.${DOMAIN}/rest`,
@@ -55,13 +58,20 @@ async function findContactByName(name) {
 }
 
 // -----------------------------------------------------------
-// СОЗДАНИЕ КОНТАКТА (без шаблона, только имя)
+// СОЗДАНИЕ КОНТАКТА (с шаблоном, если задан)
 // -----------------------------------------------------------
 async function createContact(amoUserName) {
   const cleanName = (amoUserName || 'Пользователь amoMessenger').trim();
   const body = { name: cleanName };
 
-  console.log('📤 Создаём контакт:', JSON.stringify(body, null, 2));
+  if (CONTACT_TEMPLATE_ID) {
+    body.template = { id: Number(CONTACT_TEMPLATE_ID) };
+    console.log(`📤 Создаём контакт с шаблоном ID ${CONTACT_TEMPLATE_ID}`);
+  } else {
+    console.log('📤 Создаём контакт без шаблона (может вызвать ошибку, если шаблон обязателен)');
+  }
+
+  console.log('📤 Тело запроса:', JSON.stringify(body, null, 2));
 
   try {
     const res = await restClient.post('/contact/', body);
@@ -74,7 +84,7 @@ async function createContact(amoUserName) {
 }
 
 // -----------------------------------------------------------
-// НАЙТИ ИЛИ СОЗДАТЬ КОНТАКТ ПО ИМЕНИ
+// НАЙТИ ИЛИ СОЗДАТЬ КОНТАКТ
 // -----------------------------------------------------------
 async function findOrCreateContactId(amoUserName) {
   const cleanName = (amoUserName || '').trim();
@@ -161,7 +171,6 @@ async function createTask({ contactId, amoUserId, amoUserName, text, attachments
 // -----------------------------------------------------------
 async function getAmoUserIdFromTask(taskId) {
   try {
-    // Используем GET /task/get с параметром id
     const res = await restClient.get('/task/get', {
       params: {
         id: Number(taskId),
