@@ -2,7 +2,7 @@
 //  МОДУЛЬ РАБОТЫ С ПЛАНФИКС
 //  REST API – для поиска/создания контактов, задач, полей
 //  Webchat API – для отправки сообщений с дополнительными данными
-//  Связь с amoUserId хранится ТОЛЬКО в задаче
+//  Поиск контакта только по имени, связь через задачу
 // ============================================================
 
 const axios = require('axios');
@@ -40,47 +40,26 @@ function isClosedStatus(status) {
 }
 
 // -----------------------------------------------------------
-// ПОИСК ОТКРЫТОЙ ЗАДАЧИ ПО amoUserId (через поле задачи)
+// ПОИСК КОНТАКТА ПО ИМЕНИ
 // -----------------------------------------------------------
-async function findTaskByAmoUserId(amoUserId) {
-  if (!AMO_TASK_FIELD_ID) {
-    console.warn('⚠️ Не задан PLANFIX_AMO_TASK_FIELD_ID, поиск по задаче невозможен');
-    return null;
-  }
-  if (!amoUserId) {
-    console.warn('⚠️ findTaskByAmoUserId вызван с пустым значением');
-    return null;
-  }
-  // Проверка, что значение похоже на UUID (чтобы не путать с именем)
-  if (typeof amoUserId === 'string' && !amoUserId.includes('-')) {
-    console.warn(`⚠️ Значение "${amoUserId}" не похоже на UUID, возможно, передан userName. Игнорируем.`);
-    return null;
-  }
-
+async function findContactByName(name) {
+  if (!name) return null;
   const body = {
     offset: 0,
     pageSize: 1,
     filters: [
       {
-        type: 4102,                       // пользовательское поле задачи
-        fieldId: Number(AMO_TASK_FIELD_ID), // используем fieldId
+        type: 1,                // фильтр по имени
         operator: 'equal',
-        value: String(amoUserId),
+        value: name,
       },
     ],
-    fields: 'id,name,contact,status',
+    fields: 'id,name',
   };
-  console.log('📤 Запрос поиска задачи по amoUserId:', JSON.stringify(body, null, 2));
-  const res = await restClient.post('/task/list', body);
-  console.log('RAW ОТВЕТ при поиске задачи по amoUserId:', JSON.stringify(res.data, null, 2));
-  const tasks = res.data.tasks || [];
-  if (tasks.length === 0) return null;
-  const task = tasks[0];
-  if (isClosedStatus(task.status)) {
-    console.log(`⚠️ Задача ${task.id} уже завершена, не используем`);
-    return null;
-  }
-  return task;
+  const res = await restClient.post('/contact/list', body);
+  console.log('RAW ОТВЕТ при поиске контакта по имени:', JSON.stringify(res.data, null, 2));
+  const contacts = res.data.contacts || [];
+  return contacts.length ? contacts[0] : null;
 }
 
 // -----------------------------------------------------------
@@ -112,23 +91,15 @@ async function createContact(amoUserName) {
 }
 
 // -----------------------------------------------------------
-// НАЙТИ ИЛИ СОЗДАТЬ КОНТАКТ ПО amoUserId
+// НАЙТИ ИЛИ СОЗДАТЬ КОНТАКТ ПО ИМЕНИ
 // -----------------------------------------------------------
-async function findOrCreateContactId(amoUserId, amoUserName) {
-  // 1. Ищем открытую задачу с этим amoUserId
-  const task = await findTaskByAmoUserId(amoUserId);
-  if (task) {
-    const contactId = task.contact?.id;
-    if (contactId) {
-      console.log(`✅ Найдена задача ${task.id} с контактом ${contactId}`);
-      return contactId;
-    } else {
-      console.warn(`⚠️ В задаче ${task.id} нет контакта, создаём новый контакт`);
-    }
+async function findOrCreateContactId(amoUserName) {
+  let contact = await findContactByName(amoUserName);
+  if (!contact) {
+    contact = await createContact(amoUserName);
+  } else {
+    console.log(`✅ Контакт найден: ID ${contact.id}, имя "${contact.name}"`);
   }
-
-  // 2. Если задачи нет или в ней нет контакта – создаём контакт (только имя)
-  const contact = await createContact(amoUserName);
   return contact.id;
 }
 
@@ -169,6 +140,7 @@ async function createTask({ contactId, amoUserId, amoUserName, text, attachments
   params.append('contactId', String(contactId));
   params.append('contactName', amoUserName || `Пользователь ${amoUserId}`);
   params.append('title', `Обращение из amoMessenger: ${amoUserName || amoUserId}`);
+  // Передаём amoUserId как дополнительное поле задачи
   params.append('data_amoUserId', String(amoUserId));
 
   if (attachments && attachments.length > 0) {
