@@ -113,38 +113,55 @@ function parseIncomingMessage(body) {
   const message = body?._embedded?.message;
   const author = message?.author;
   const userId = author?.user_id;
-  const text = message?.text;
+  const text = message?.text || '';
 
-  // Извлекаем вложения – могут быть в разных местах
   let attachments = [];
   if (message?.attachments && Array.isArray(message.attachments)) {
-    attachments = message.attachments.map(file => ({
-      name: file.name || 'file',
-      url: file.url || file.link || file.href,
-    }));
-  } else if (body?.attachments && Array.isArray(body.attachments)) {
+    attachments = message.attachments.map(file => {
+      let name = null;
+      let url = null;
+      // Проверяем возможные типы вложений
+      if (file.photo) {
+        name = file.photo.filename;
+        url = file.photo.link;
+      } else if (file.file) {
+        name = file.file.filename;
+        url = file.file.link;
+      } else if (file.video) {
+        name = file.video.filename;
+        url = file.video.link;
+      } else if (file.audio) {
+        name = file.audio.filename;
+        url = file.audio.link;
+      } else if (file.document) {
+        name = file.document.filename;
+        url = file.document.link;
+      } else {
+        // fallback: ищем любые поля с filename и link
+        for (const key of ['photo', 'file', 'video', 'audio', 'document']) {
+          if (file[key] && file[key].filename && file[key].link) {
+            name = file[key].filename;
+            url = file[key].link;
+            break;
+          }
+        }
+      }
+      return { name: name || 'file', url: url || '' };
+    });
+  }
+
+  // fallback на случай других структур
+  if (attachments.length === 0 && body?.attachments) {
     attachments = body.attachments.map(file => ({
-      name: file.name || 'file',
-      url: file.url || file.link || file.href,
+      name: file.name || file.filename || 'file',
+      url: file.url || file.link || '',
     }));
   }
-
-  // На случай, если структура другая – пробуем найти files
-  if (attachments.length === 0 && body?.files) {
-    attachments = body.files.map(file => ({
-      name: file.name || 'file',
-      url: file.url || file.link || file.href,
-    }));
-  }
-
-  // Запасные варианты для userId и text
-  const fallbackUserId = body.from?.id || body.userId || body.sender_id || body.user_id;
-  const fallbackText = body.message?.text || body.text || body.message;
 
   return {
-    userId: userId || fallbackUserId,
+    userId,
     userName: undefined,
-    text: text || fallbackText,
+    text,
     attachments,
     raw: body,
   };
