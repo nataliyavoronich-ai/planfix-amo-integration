@@ -9,7 +9,6 @@ const amo = require('./amomessenger');
 
 const app = express();
 
-// --- ПАРСИНГ ТЕЛА ЗАПРОСА ---
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
@@ -22,9 +21,6 @@ function checkSecret(req, res, next) {
   next();
 }
 
-// -----------------------------------------------------------
-// Декодирование HTML-сущностей
-// -----------------------------------------------------------
 function decodeHtmlEntities(text) {
   if (!text) return '';
   const entities = {
@@ -47,12 +43,8 @@ function decodeHtmlEntities(text) {
   return result.trim();
 }
 
-// Хранилище для предотвращения дублирования
 const processedMessages = new Set();
 
-// -----------------------------------------------------------
-// OAuth callback
-// -----------------------------------------------------------
 app.get('/oauth', async (req, res) => {
   const { code } = req.query;
   if (!code) return res.status(400).send('Не пришёл параметр code');
@@ -68,9 +60,6 @@ app.get('/oauth', async (req, res) => {
   }
 });
 
-// -----------------------------------------------------------
-// Вебхук от amoMessenger (входящие)
-// -----------------------------------------------------------
 app.post('/webhook/amomessenger', checkSecret, async (req, res) => {
   console.log('📩 Полный body от amoMessenger:', JSON.stringify(req.body, null, 2));
 
@@ -94,7 +83,6 @@ app.post('/webhook/amomessenger', checkSecret, async (req, res) => {
       return res.sendStatus(200);
     }
 
-    // Получаем реальное имя
     let realUserName = userName;
     if (!realUserName || realUserName.startsWith('Пользователь ') || realUserName === userId) {
       const nameFromApi = await amo.getUserInfo(userId);
@@ -102,7 +90,6 @@ app.post('/webhook/amomessenger', checkSecret, async (req, res) => {
       console.log(`👤 Имя пользователя: ${realUserName}`);
     }
 
-    // Находим или создаём контакт по имени
     const contactId = await planfix.findOrCreateContactId(realUserName);
     console.log(`✅ Контакт ID: ${contactId}`);
 
@@ -129,9 +116,6 @@ app.post('/webhook/amomessenger', checkSecret, async (req, res) => {
   }
 });
 
-// -----------------------------------------------------------
-// Вебхук от Planfix (исходящие сообщения и уведомления)
-// -----------------------------------------------------------
 app.post('/webhook/planfix', checkSecret, async (req, res) => {
   console.log('📩 Полный запрос от Планфикса:');
   console.log('  Headers:', req.headers);
@@ -143,17 +127,12 @@ app.post('/webhook/planfix', checkSecret, async (req, res) => {
     let commentText = '';
     let attachments = [];
 
-    // --- ОПРЕДЕЛЯЕМ amoUserId ---
-    // Если есть поле amoUserId – берём его
     if (req.body.amoUserId) {
       amoUserId = req.body.amoUserId;
-    }
-    // Если есть chatId (приходит в form-urlencoded) – используем его
-    else if (req.body.chatId) {
+    } else if (req.body.chatId) {
       amoUserId = req.body.chatId;
     }
 
-    // Если всё ещё нет – пробуем получить из задачи по taskId
     if (!amoUserId && taskId) {
       console.log(`🔍 Получаем amoUserId для задачи ${taskId} через API...`);
       amoUserId = await planfix.getAmoUserIdFromTask(taskId);
@@ -164,54 +143,31 @@ app.post('/webhook/planfix', checkSecret, async (req, res) => {
       return res.sendStatus(200);
     }
 
-    // --- ИЗВЛЕКАЕМ ТЕКСТ ---
-    // Из полей commentText, comment, text, message, description
     commentText = req.body.commentText || req.body.comment || req.body.text || req.body.message || req.body.description || '';
 
-    // --- ИЗВЛЕКАЕМ ВЛОЖЕНИЯ ---
-    // 1. Если attachments пришли как массив
-    if (req.body.attachments && Array.isArray(req.body.attachments)) {
-      attachments = req.body.attachments;
-    }
-    // 2. Если attachments пришли как объект (например, { url: '...', name: '...' })
-    else if (req.body.attachments && typeof req.body.attachments === 'object') {
-      // Если это объект с полями url и name – добавляем как одно вложение
-      if (req.body.attachments.url && req.body.attachments.name) {
-        attachments.push({ name: req.body.attachments.name, url: req.body.attachments.url });
-      } else {
-        // Иначе это объект с индексами (если много вложений)
-        const keys = Object.keys(req.body.attachments).filter(k => !isNaN(k));
-        attachments = keys.map(k => req.body.attachments[k]);
+    // Извлечение вложений
+    if (req.body.attachments) {
+      if (Array.isArray(req.body.attachments)) {
+        attachments = req.body.attachments;
+      } else if (typeof req.body.attachments === 'object') {
+        if (req.body.attachments.url && req.body.attachments.name) {
+          attachments.push({ name: req.body.attachments.name, url: req.body.attachments.url });
+        } else {
+          const keys = Object.keys(req.body.attachments).filter(k => !isNaN(k));
+          attachments = keys.map(k => req.body.attachments[k]);
+        }
       }
     }
 
-    // Если нет ни текста, ни вложений – пропускаем
     if (!commentText && (!attachments || attachments.length === 0)) {
       console.warn('⚠️ Нет текста комментария и вложений, пропускаем');
       return res.sendStatus(200);
     }
 
-    // Очищаем HTML
     const cleanText = decodeHtmlEntities(commentText);
 
-    // Формируем сообщение
-    let messageToSend = cleanText;
-    if (attachments && attachments.length > 0) {
-      const fileNames = attachments.map(a => a.name || 'файл').join(', ');
-      if (cleanText) {
-        messageToSend = `${cleanText}\n\nФайлы: ${fileNames}`;
-      } else {
-        messageToSend = `Файлы: ${fileNames}`;
-      }
-    }
-
-    if (!messageToSend) {
-      console.warn('⚠️ После обработки сообщение пустое');
-      return res.sendStatus(200);
-    }
-
     // Защита от дублирования
-    const messageKey = `${taskId}_${messageToSend.substring(0, 50)}`;
+    const messageKey = `${taskId}_${cleanText.substring(0, 50)}`;
     if (processedMessages.has(messageKey)) {
       console.log(`⚠️ Дублирующее сообщение для задачи ${taskId}, пропускаем`);
       return res.sendStatus(200);
@@ -223,8 +179,9 @@ app.post('/webhook/planfix', checkSecret, async (req, res) => {
       arr.slice(-500).forEach(k => processedMessages.add(k));
     }
 
-    console.log(`📤 Отправляем сообщение пользователю ${amoUserId}: ${messageToSend}`);
-    await amo.sendMessage(amoUserId, messageToSend);
+    // Отправляем с вложениями, если они есть
+    console.log(`📤 Отправляем сообщение пользователю ${amoUserId} с ${attachments.length} вложением(ями)`);
+    await amo.sendMessageWithAttachments(amoUserId, cleanText, attachments);
     console.log('✅ Сообщение успешно отправлено в amoMessenger');
 
     res.sendStatus(200);
@@ -234,7 +191,6 @@ app.post('/webhook/planfix', checkSecret, async (req, res) => {
   }
 });
 
-// Проверка
 app.get('/', (req, res) => {
   res.send('Интеграция работает 🚀');
 });
