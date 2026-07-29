@@ -1,6 +1,6 @@
 // ============================================================
 //  МОДУЛЬ РАБОТЫ С ПЛАНФИКС
-//  REST API – для поиска контактов и задач
+//  REST API – для поиска/создания/обновления контактов и задач
 //  Webchat API – для отправки сообщений
 // ============================================================
 
@@ -8,14 +8,13 @@ const axios = require('axios');
 
 const ACCOUNT = process.env.PLANFIX_ACCOUNT;
 const DOMAIN = process.env.PLANFIX_DOMAIN || 'planfix.com';
-const TOKEN = process.env.PLANFIX_TOKEN;                     // REST токен (из "Доступ к API")
+const TOKEN = process.env.PLANFIX_TOKEN;                     // REST токен
 const WEBCHAT_TOKEN = process.env.PLANFIX_WEBCHAT_TOKEN;      // Ключ провайдера веб-чата
 const CONTACT_FIELD_ID = process.env.PLANFIX_AMO_CONTACT_FIELD_ID;
 const CONTACT_TEMPLATE_ID = process.env.PLANFIX_CONTACT_TEMPLATE_ID;
-const PROJECT_ID = process.env.PLANFIX_PROJECT_ID;
 const PROVIDER_ID = 'amomessenger';
 
-// REST клиент – для поиска контактов и задач
+// REST клиент
 const restClient = axios.create({
   baseURL: `https://${ACCOUNT}.${DOMAIN}/rest`,
   headers: {
@@ -24,7 +23,7 @@ const restClient = axios.create({
   },
 });
 
-// Названия статусов завершённых задач
+// Статусы завершённых задач
 const CLOSED_STATUS_WORDS = (
   process.env.PLANFIX_CLOSED_STATUS_WORDS ||
   'заверш,выполн,закрыт,отмен,done,closed,cancel'
@@ -40,7 +39,7 @@ function isClosedStatus(status) {
 }
 
 // -----------------------------------------------------------
-// ПОИСК КОНТАКТА по amoMessenger ID (REST)
+// ПОИСК КОНТАКТА по amoMessenger ID
 // -----------------------------------------------------------
 async function findContactByAmoUserId(amoUserId) {
   const body = {
@@ -63,7 +62,7 @@ async function findContactByAmoUserId(amoUserId) {
 }
 
 // -----------------------------------------------------------
-// СОЗДАНИЕ КОНТАКТА (REST)
+// СОЗДАНИЕ НОВОГО КОНТАКТА
 // -----------------------------------------------------------
 async function createContact(amoUserId, amoUserName) {
   const body = {
@@ -83,18 +82,38 @@ async function createContact(amoUserId, amoUserName) {
 }
 
 // -----------------------------------------------------------
-// НАЙТИ ИЛИ СОЗДАТЬ КОНТАКТ
+// ОБНОВЛЕНИЕ ИМЕНИ КОНТАКТА (если изменилось)
+// -----------------------------------------------------------
+async function updateContactName(contactId, newName) {
+  const body = {
+    id: contactId,
+    name: newName,
+  };
+  console.log(`🔄 Обновляем имя контакта ${contactId} на "${newName}"`);
+  const res = await restClient.post('/contact/', body);
+  console.log('RAW ОТВЕТ Планфикс при обновлении контакта:', JSON.stringify(res.data, null, 2));
+  return res.data;
+}
+
+// -----------------------------------------------------------
+// НАЙТИ ИЛИ СОЗДАТЬ КОНТАКТ, ПРИ НЕОБХОДИМОСТИ ОБНОВИТЬ ИМЯ
 // -----------------------------------------------------------
 async function findOrCreateContactId(amoUserId, amoUserName) {
   let contact = await findContactByAmoUserId(amoUserId);
   if (!contact) {
+    // Создаём новый контакт
     contact = await createContact(amoUserId, amoUserName);
+  } else if (amoUserName && contact.name !== amoUserName) {
+    // Если контакт найден, но имя отличается – обновляем
+    await updateContactName(contact.id, amoUserName);
+    // Обновляем локальный объект, чтобы вернуть актуальное имя
+    contact.name = amoUserName;
   }
   return contact.id;
 }
 
 // -----------------------------------------------------------
-// ПОИСК ОТКРЫТОЙ ЗАДАЧИ по контакту (REST)
+// ПОИСК ОТКРЫТОЙ ЗАДАЧИ ПО КОНТАКТУ
 // -----------------------------------------------------------
 async function findOpenTaskByContactId(contactId) {
   const body = {
@@ -124,7 +143,7 @@ async function createTask({ contactId, amoUserId, amoUserName, text }) {
   params.append('cmd', 'newMessage');
   params.append('providerId', PROVIDER_ID);
   params.append('chatId', String(amoUserId));
-  params.append('planfix_token', WEBCHAT_TOKEN);   // <-- используем ключ веб-чата
+  params.append('planfix_token', WEBCHAT_TOKEN);
   params.append('message', text);
   params.append('contactId', String(contactId));
   params.append('contactName', amoUserName || `Пользователь ${amoUserId}`);
@@ -139,7 +158,8 @@ async function createTask({ contactId, amoUserId, amoUserName, text }) {
     const res = await axios.post(url, params, {
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     });
-    console.log('✅ Сообщение отправлено в Планфикс:', res.status, res.data);
+    console.log('✅ Сообщение отправлено в Планфикс:', res.status);
+    console.log('📦 Полный ответ от Планфикса:', JSON.stringify(res.data, null, 2));
     return res.data;
   } catch (err) {
     if (err.response) {
@@ -154,7 +174,7 @@ async function createTask({ contactId, amoUserId, amoUserName, text }) {
 }
 
 // -----------------------------------------------------------
-// ДОБАВЛЕНИЕ КОММЕНТАРИЯ (REST)
+// ДОБАВЛЕНИЕ КОММЕНТАРИЯ
 // -----------------------------------------------------------
 async function addComment(taskId, text) {
   const body = { description: text };
