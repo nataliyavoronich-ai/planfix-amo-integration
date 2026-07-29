@@ -1,7 +1,7 @@
 // ============================================================
 //  МОДУЛЬ РАБОТЫ С ПЛАНФИКС
-//  REST API – для поиска/создания/обновления контактов и задач
-//  Webchat API – для отправки сообщений
+//  REST API – для поиска/создания контактов, задач, полей
+//  Webchat API – для отправки сообщений с дополнительными данными
 // ============================================================
 
 const axios = require('axios');
@@ -10,8 +10,8 @@ const ACCOUNT = process.env.PLANFIX_ACCOUNT;
 const DOMAIN = process.env.PLANFIX_DOMAIN || 'planfix.com';
 const TOKEN = process.env.PLANFIX_TOKEN;                     // REST токен
 const WEBCHAT_TOKEN = process.env.PLANFIX_WEBCHAT_TOKEN;      // Ключ провайдера веб-чата
-const CONTACT_FIELD_ID = process.env.PLANFIX_AMO_CONTACT_FIELD_ID;
 const CONTACT_TEMPLATE_ID = process.env.PLANFIX_CONTACT_TEMPLATE_ID;
+const PROJECT_ID = process.env.PLANFIX_PROJECT_ID;
 const PROVIDER_ID = 'amomessenger';
 
 // REST клиент
@@ -39,75 +39,64 @@ function isClosedStatus(status) {
 }
 
 // -----------------------------------------------------------
-// ПОИСК КОНТАКТА по amoMessenger ID
+// ПОИСК КОНТАКТА ПО ИМЕНИ
 // -----------------------------------------------------------
-async function findContactByAmoUserId(amoUserId) {
+async function findContactByName(name) {
   const body = {
     offset: 0,
-    pageSize: 1,
+    pageSize: 10,
     filters: [
       {
-        type: 4101,
-        field: Number(CONTACT_FIELD_ID),
+        type: 1,
         operator: 'equal',
-        value: String(amoUserId),
+        value: name,
       },
     ],
     fields: 'id,name',
   };
   const res = await restClient.post('/contact/list', body);
-  console.log('RAW ОТВЕТ Планфикс при поиске контакта:', JSON.stringify(res.data, null, 2));
+  console.log('RAW ОТВЕТ Планфикс при поиске контакта по имени:', JSON.stringify(res.data, null, 2));
   const contacts = res.data.contacts || [];
   return contacts.length ? contacts[0] : null;
 }
 
 // -----------------------------------------------------------
-// СОЗДАНИЕ НОВОГО КОНТАКТА
+// СОЗДАНИЕ НОВОГО КОНТАКТА (только имя)
 // -----------------------------------------------------------
-async function createContact(amoUserId, amoUserName) {
+async function createContact(amoUserName) {
   const body = {
     template: CONTACT_TEMPLATE_ID ? { id: Number(CONTACT_TEMPLATE_ID) } : undefined,
-    name: amoUserName || `amoMessenger ${amoUserId}`,
-    customFieldData: [
-      {
-        field: { id: Number(CONTACT_FIELD_ID) },
-        value: String(amoUserId),
-      },
-    ],
+    name: amoUserName || 'Пользователь amoMessenger',
   };
   Object.keys(body).forEach(key => body[key] === undefined && delete body[key]);
-  const res = await restClient.post('/contact/', body);
-  console.log('RAW ОТВЕТ Планфикс при создании контакта:', JSON.stringify(res.data, null, 2));
-  return res.data;
+
+  console.log('📤 Создаём контакт:', JSON.stringify(body, null, 2));
+
+  try {
+    const res = await restClient.post('/contact/', body);
+    console.log('✅ Контакт создан, ID:', res.data.id);
+    return res.data;
+  } catch (err) {
+    if (err.response) {
+      console.error('❌ Ошибка при создании контакта:');
+      console.error('  Статус:', err.response.status);
+      console.error('  Данные ответа:', JSON.stringify(err.response.data, null, 2));
+    } else {
+      console.error('❌ Ошибка:', err.message);
+    }
+    throw err;
+  }
 }
 
 // -----------------------------------------------------------
-// ОБНОВЛЕНИЕ ИМЕНИ КОНТАКТА (если изменилось)
+// НАЙТИ ИЛИ СОЗДАТЬ КОНТАКТ ПО ИМЕНИ
 // -----------------------------------------------------------
-async function updateContactName(contactId, newName) {
-  const body = {
-    id: contactId,
-    name: newName,
-  };
-  console.log(`🔄 Обновляем имя контакта ${contactId} на "${newName}"`);
-  const res = await restClient.post('/contact/', body);
-  console.log('RAW ОТВЕТ Планфикс при обновлении контакта:', JSON.stringify(res.data, null, 2));
-  return res.data;
-}
-
-// -----------------------------------------------------------
-// НАЙТИ ИЛИ СОЗДАТЬ КОНТАКТ, ПРИ НЕОБХОДИМОСТИ ОБНОВИТЬ ИМЯ
-// -----------------------------------------------------------
-async function findOrCreateContactId(amoUserId, amoUserName) {
-  let contact = await findContactByAmoUserId(amoUserId);
+async function findOrCreateContactId(amoUserName) {
+  let contact = await findContactByName(amoUserName);
   if (!contact) {
-    // Создаём новый контакт
-    contact = await createContact(amoUserId, amoUserName);
-  } else if (amoUserName && contact.name !== amoUserName) {
-    // Если контакт найден, но имя отличается – обновляем
-    await updateContactName(contact.id, amoUserName);
-    // Обновляем локальный объект, чтобы вернуть актуальное имя
-    contact.name = amoUserName;
+    contact = await createContact(amoUserName);
+  } else {
+    console.log(`✅ Контакт найден: ID ${contact.id}, имя "${contact.name}"`);
   }
   return contact.id;
 }
@@ -136,7 +125,7 @@ async function findOpenTaskByContactId(contactId) {
 }
 
 // -----------------------------------------------------------
-// ОТПРАВКА СООБЩЕНИЯ В ПЛАНФИКС (Webchat API)
+// ОТПРАВКА СООБЩЕНИЯ В ПЛАНФИКС (Webchat API) с data_amoUserId
 // -----------------------------------------------------------
 async function createTask({ contactId, amoUserId, amoUserName, text, attachments = [] }) {
   const params = new URLSearchParams();
@@ -144,20 +133,21 @@ async function createTask({ contactId, amoUserId, amoUserName, text, attachments
   params.append('providerId', PROVIDER_ID);
   params.append('chatId', String(amoUserId));
   params.append('planfix_token', WEBCHAT_TOKEN);
-  
-  // Если текст пустой, но есть вложения, добавляем описание файлов
+
   let messageText = text || '';
   if (!messageText && attachments && attachments.length > 0) {
     const names = attachments.map(a => a.name || 'file').join(', ');
     messageText = `📎 Вложения: ${names}`;
   }
   params.append('message', messageText || 'Сообщение без текста');
-  
+
   params.append('contactId', String(contactId));
   params.append('contactName', amoUserName || `Пользователь ${amoUserId}`);
   params.append('title', `Обращение из amoMessenger: ${amoUserName || amoUserId}`);
 
-  // Добавляем вложения
+  // Передаём amoUserId как дополнительное поле задачи
+  params.append('data_amoUserId', String(amoUserId));
+
   if (attachments && attachments.length > 0) {
     attachments.forEach(file => {
       if (file.name && file.url) {
@@ -192,6 +182,52 @@ async function createTask({ contactId, amoUserId, amoUserName, text, attachments
 }
 
 // -----------------------------------------------------------
+// ПОЛУЧЕНИЕ amoUserId ИЗ ЗАДАЧИ ПО ЕЁ ID (через /task/list)
+// -----------------------------------------------------------
+async function getAmoUserIdFromTask(taskId) {
+  try {
+    const body = {
+      offset: 0,
+      pageSize: 1,
+      filters: [
+        {
+          type: 2,               // фильтр по ID задачи
+          operator: 'equal',
+          value: Number(taskId),
+        },
+      ],
+      fields: 'id,name,customFields',
+    };
+    console.log(`📤 Запрашиваем задачу ${taskId} через POST /task/list`);
+    const res = await restClient.post('/task/list', body);
+    console.log('🔍 Получена задача:', JSON.stringify(res.data, null, 2));
+
+    const tasks = res.data.tasks || [];
+    if (tasks.length === 0) {
+      console.warn(`⚠️ Задача ${taskId} не найдена`);
+      return null;
+    }
+    const task = tasks[0];
+    const customFields = task.customFields || [];
+    // Ищем поле с именем "amoUserId"
+    const field = customFields.find(f => f.field?.name === 'amoUserId');
+    if (field) {
+      console.log(`✅ Найдено поле amoUserId: ${field.value}`);
+      return field.value;
+    }
+    console.warn('⚠️ Поле amoUserId не найдено в задаче');
+    return null;
+  } catch (err) {
+    console.error('❌ Ошибка при получении задачи:', err.message);
+    if (err.response) {
+      console.error('  Статус:', err.response.status);
+      console.error('  Данные:', JSON.stringify(err.response.data, null, 2));
+    }
+    return null;
+  }
+}
+
+// -----------------------------------------------------------
 // ДОБАВЛЕНИЕ КОММЕНТАРИЯ
 // -----------------------------------------------------------
 async function addComment(taskId, text) {
@@ -205,4 +241,5 @@ module.exports = {
   findOpenTaskByContactId,
   createTask,
   addComment,
+  getAmoUserIdFromTask,
 };
