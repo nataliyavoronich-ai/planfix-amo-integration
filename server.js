@@ -24,22 +24,15 @@ function checkSecret(req, res, next) {
 // -----------------------------------------------------------
 app.get('/oauth', async (req, res) => {
   const { code } = req.query;
-
   if (!code) {
     return res.status(400).send('Не пришёл параметр code');
   }
-
   console.log('Получен код авторизации:', code.slice(0, 10) + '...');
-
   try {
     const tokenData = await amo.exchangeCodeForToken(code);
     console.log('✅ Получен access_token:', tokenData.access_token);
-    console.log('  refresh_token:', tokenData.refresh_token);
-    console.log('  expires_in:', tokenData.expires_in);
-
     const context = await amo.validateToken(tokenData.access_token);
-    console.log('Контекст токена (кто установил приложение):', context);
-
+    console.log('Контекст:', context);
     res.send(`
       <h2>Приложение успешно подключено!</h2>
       <p>Токен: <code>${tokenData.access_token}</code></p>
@@ -92,8 +85,8 @@ app.post('/webhook/amomessenger', checkSecret, async (req, res) => {
       }
     }
 
-    // НАХОДИМ ИЛИ СОЗДАЁМ КОНТАКТ ТОЛЬКО ПО ИМЕНИ
-    const contactId = await planfix.findOrCreateContactId(realUserName);
+    // Ищем контакт (сначала по задаче, потом по имени)
+    const contactId = await planfix.findOrCreateContactId(userId, realUserName);
     console.log(`✅ Контакт ID: ${contactId}`);
 
     // Ищем открытую задачу по контакту
@@ -129,11 +122,11 @@ app.post('/webhook/planfix', checkSecret, async (req, res) => {
   console.log('  Body:', JSON.stringify(req.body, null, 2));
 
   try {
-    // 1. Сначала пытаемся взять amoUserId из тела запроса (если сценарий его передаёт)
+    // 1. Пытаемся взять amoUserId из тела запроса
     let amoUserId = req.body.amoUserId || null;
     let commentText = req.body.commentText || req.body.comment || req.body.text || req.body.message || req.body.description;
 
-    // 2. Если amoUserId не пришёл в теле, пытаемся получить из задачи по ID
+    // 2. Если amoUserId не пришёл, получаем из задачи по заголовку
     if (!amoUserId) {
       const taskId = req.headers['x-planfix-task'];
       if (taskId) {
@@ -154,8 +147,15 @@ app.post('/webhook/planfix', checkSecret, async (req, res) => {
       return res.sendStatus(200);
     }
 
-    console.log(`📤 Отправляем сообщение пользователю ${amoUserId}: ${commentText}`);
-    await amo.sendMessage(amoUserId, commentText);
+    // ОЧИЩАЕМ HTML-ТЕГИ из комментария
+    const cleanText = commentText.replace(/<[^>]*>/g, '').trim();
+    if (!cleanText) {
+      console.warn('⚠️ После очистки HTML текст пуст');
+      return res.sendStatus(200);
+    }
+
+    console.log(`📤 Отправляем сообщение пользователю ${amoUserId}: ${cleanText}`);
+    await amo.sendMessage(amoUserId, cleanText);
     console.log('✅ Сообщение успешно отправлено в amoMessenger');
 
     res.sendStatus(200);
