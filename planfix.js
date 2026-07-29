@@ -3,16 +3,17 @@
 //  Использует официальный REST API Планфикс:
 //  https://help.planfix.com/restapidocs/
 // ============================================================
-
+ 
 const axios = require('axios');
-
-const ACCOUNT = process.env.PLANFIX_ACCOUNT;      // например "mycompany"
+ 
+const ACCOUNT = process.env.PLANFIX_ACCOUNT;      // например "zlmktest"
+const DOMAIN = process.env.PLANFIX_DOMAIN || 'planfix.com'; // planfix.com или planfix.ru
 const TOKEN = process.env.PLANFIX_TOKEN;          // токен из Управление аккаунтом -> Доступ к API
 const CUSTOM_FIELD_ID = process.env.PLANFIX_AMO_FIELD_ID; // ID пользовательского поля "amoMessenger ID"
 const PROJECT_ID = process.env.PLANFIX_PROJECT_ID; // ID проекта, в который создавать задачи (необязательно)
-
-const BASE_URL = `https://${ACCOUNT}.planfix.com/rest`;
-
+ 
+const BASE_URL = `https://${ACCOUNT}.${DOMAIN}/rest`;
+ 
 const client = axios.create({
   baseURL: BASE_URL,
   headers: {
@@ -20,7 +21,7 @@ const client = axios.create({
     'Content-Type': 'application/json',
   },
 });
-
+ 
 // Ищем среди задач ту, что:
 //  - не завершена (isDone = false)
 //  - в кастомном поле "amoMessenger ID" стоит нужный ID пользователя
@@ -43,12 +44,12 @@ async function findOpenTaskByAmoUserId(amoUserId) {
     ],
     fields: 'id,name,status',
   };
-
+ 
   const res = await client.post('/task/list', body);
   const tasks = res.data.tasks || [];
   return tasks.length ? tasks[0] : null;
 }
-
+ 
 // Создаём новую задачу
 async function createTask({ amoUserId, amoUserName, text }) {
   const body = {
@@ -62,11 +63,11 @@ async function createTask({ amoUserId, amoUserName, text }) {
       },
     ],
   };
-
+ 
   const res = await client.post('/task/', body);
   return res.data; // содержит { id: ... }
 }
-
+ 
 // Добавляем комментарий к существующей задаче
 async function addComment(taskId, text) {
   const body = {
@@ -75,7 +76,7 @@ async function addComment(taskId, text) {
   const res = await client.post(`/task/${taskId}/comments/`, body);
   return res.data;
 }
-
+ 
 module.exports = {
   findOpenTaskByAmoUserId,
   createTask,
