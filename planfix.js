@@ -2,7 +2,7 @@
 //  МОДУЛЬ РАБОТЫ С ПЛАНФИКС
 //  REST API – для поиска/создания контактов, задач, полей
 //  Webchat API – для отправки сообщений с дополнительными данными
-//  Связь через поле задачи amoUserId + контакт по имени (как fallback)
+//  Поиск контакта только по имени (уникально)
 // ============================================================
 
 const axios = require('axios');
@@ -13,7 +13,6 @@ const TOKEN = process.env.PLANFIX_TOKEN;
 const WEBCHAT_TOKEN = process.env.PLANFIX_WEBCHAT_TOKEN;
 const CONTACT_TEMPLATE_ID = process.env.PLANFIX_CONTACT_TEMPLATE_ID;
 const PROVIDER_ID = 'amomessenger';
-const AMO_TASK_FIELD_ID = process.env.PLANFIX_AMO_TASK_FIELD_ID; // ID поля задачи "amoUserId"
 
 const restClient = axios.create({
   baseURL: `https://${ACCOUNT}.${DOMAIN}/rest`,
@@ -38,48 +37,7 @@ function isClosedStatus(status) {
 }
 
 // -----------------------------------------------------------
-// ПОИСК ОТКРЫТОЙ ЗАДАЧИ ПО amoUserId (через пользовательское поле)
-// -----------------------------------------------------------
-async function findTaskByAmoUserId(amoUserId) {
-  if (!AMO_TASK_FIELD_ID) {
-    console.warn('⚠️ Не задан PLANFIX_AMO_TASK_FIELD_ID, поиск по задаче невозможен');
-    return null;
-  }
-  if (!amoUserId) return null;
-  // Проверяем, что значение похоже на UUID (содержит дефисы)
-  if (typeof amoUserId === 'string' && !amoUserId.includes('-')) {
-    console.warn(`⚠️ Значение "${amoUserId}" не похоже на UUID, возможно передан userName. Игнорируем.`);
-    return null;
-  }
-
-  const body = {
-    offset: 0,
-    pageSize: 1,
-    filters: [
-      {
-        type: 4102,                       // пользовательское поле задачи
-        field: { id: Number(AMO_TASK_FIELD_ID) }, // используем объект field
-        operator: 'equal',
-        value: String(amoUserId),
-      },
-    ],
-    fields: 'id,name,contact,status',
-  };
-  console.log('📤 Запрос поиска задачи по amoUserId:', JSON.stringify(body, null, 2));
-  const res = await restClient.post('/task/list', body);
-  console.log('RAW ОТВЕТ при поиске задачи по amoUserId:', JSON.stringify(res.data, null, 2));
-  const tasks = res.data.tasks || [];
-  if (tasks.length === 0) return null;
-  const task = tasks[0];
-  if (isClosedStatus(task.status)) {
-    console.log(`⚠️ Задача ${task.id} уже завершена, не используем`);
-    return null;
-  }
-  return task;
-}
-
-// -----------------------------------------------------------
-// ПОИСК КОНТАКТА ПО ИМЕНИ (fallback)
+// ПОИСК КОНТАКТА ПО ИМЕНИ
 // -----------------------------------------------------------
 async function findContactByName(name) {
   if (!name) return null;
@@ -120,26 +78,14 @@ async function createContact(amoUserName) {
 }
 
 // -----------------------------------------------------------
-// НАЙТИ ИЛИ СОЗДАТЬ КОНТАКТ ПО amoUserId
+// НАЙТИ ИЛИ СОЗДАТЬ КОНТАКТ ПО ИМЕНИ
 // -----------------------------------------------------------
-async function findOrCreateContactId(amoUserId, amoUserName) {
-  // 1. Пытаемся найти открытую задачу по amoUserId
-  const task = await findTaskByAmoUserId(amoUserId);
-  if (task) {
-    const contactId = task.contact?.id;
-    if (contactId) {
-      console.log(`✅ Найдена задача ${task.id} с контактом ${contactId}`);
-      return contactId;
-    }
-    console.warn(`⚠️ В задаче ${task.id} нет контакта, ищем по имени`);
-  }
-
-  // 2. Если задача не найдена или в ней нет контакта – ищем по имени
+async function findOrCreateContactId(amoUserName) {
   let contact = await findContactByName(amoUserName);
   if (!contact) {
     contact = await createContact(amoUserName);
   } else {
-    console.log(`✅ Контакт найден по имени: ID ${contact.id}, имя "${contact.name}"`);
+    console.log(`✅ Контакт найден: ID ${contact.id}, имя "${contact.name}"`);
   }
   return contact.id;
 }
@@ -211,47 +157,6 @@ async function createTask({ contactId, amoUserId, amoUserName, text, attachments
 }
 
 // -----------------------------------------------------------
-// ПОЛУЧЕНИЕ amoUserId ИЗ ЗАДАЧИ ПО ЕЁ ID
-// -----------------------------------------------------------
-async function getAmoUserIdFromTask(taskId) {
-  try {
-    const body = {
-      offset: 0,
-      pageSize: 1,
-      filters: [
-        { type: 2, operator: 'equal', value: Number(taskId) },
-      ],
-      fields: 'id,name,customFields',
-    };
-    console.log(`📤 Запрашиваем задачу ${taskId} через POST /task/list`);
-    const res = await restClient.post('/task/list', body);
-    console.log('🔍 Получена задача:', JSON.stringify(res.data, null, 2));
-
-    const tasks = res.data.tasks || [];
-    if (tasks.length === 0) {
-      console.warn(`⚠️ Задача ${taskId} не найдена`);
-      return null;
-    }
-    const task = tasks[0];
-    const customFields = task.customFields || [];
-    const field = customFields.find(f => f.field?.name === 'amoUserId' || f.field?.id === Number(AMO_TASK_FIELD_ID));
-    if (field) {
-      console.log(`✅ Найдено поле amoUserId: ${field.value}`);
-      return field.value;
-    }
-    console.warn('⚠️ Поле amoUserId не найдено в задаче');
-    return null;
-  } catch (err) {
-    console.error('❌ Ошибка при получении задачи:', err.message);
-    if (err.response) {
-      console.error('  Статус:', err.response.status);
-      console.error('  Данные:', JSON.stringify(err.response.data, null, 2));
-    }
-    return null;
-  }
-}
-
-// -----------------------------------------------------------
 // ДОБАВЛЕНИЕ КОММЕНТАРИЯ
 // -----------------------------------------------------------
 async function addComment(taskId, text) {
@@ -264,5 +169,4 @@ module.exports = {
   findOpenTaskByContactId,
   createTask,
   addComment,
-  getAmoUserIdFromTask,
 };
