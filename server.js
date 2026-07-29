@@ -77,10 +77,12 @@ app.post('/webhook/amomessenger', checkSecret, async (req, res) => {
       console.log(`👤 Имя пользователя: ${realUserName}`);
     }
 
+    // Находим или создаём контакт по имени
     console.log('🔍 Ищем/создаём контакт...');
-    const contactId = await planfix.findOrCreateContactId(userId, realUserName);
+    const contactId = await planfix.findOrCreateContactId(realUserName);
     console.log('✅ ID контакта:', contactId);
 
+    // Ищем открытую задачу
     console.log('🔍 Ищем открытую задачу...');
     const openTask = await planfix.findOpenTaskByContactId(contactId);
 
@@ -102,14 +104,12 @@ app.post('/webhook/amomessenger', checkSecret, async (req, res) => {
 
     res.sendStatus(200);
   } catch (err) {
-    // ПОДРОБНЫЙ ВЫВОД ОШИБКИ
     console.error('❌ ОШИБКА в /webhook/amomessenger:');
     console.error('  Сообщение:', err.message);
     console.error('  Стек:', err.stack);
     if (err.response) {
       console.error('  Ответ от сервера:', err.response.status, JSON.stringify(err.response.data, null, 2));
     }
-    console.error('  Полный объект ошибки:', JSON.stringify(err, Object.getOwnPropertyNames(err), 2));
     res.sendStatus(500);
   }
 });
@@ -123,19 +123,23 @@ app.post('/webhook/planfix', checkSecret, async (req, res) => {
   console.log('  Body:', JSON.stringify(req.body, null, 2));
 
   try {
-    let amoUserId = null;
-    let commentText = null;
-
-    if (req.body.amoUserId) {
-      amoUserId = req.body.amoUserId;
-    } else if (req.body.userId) {
-      amoUserId = req.body.userId;
-    } else if (req.body.contactId) {
-      amoUserId = req.body.contactId;
-    } else if (req.body.data && req.body.data.amoUserId) {
-      amoUserId = req.body.data.amoUserId;
+    // Получаем ID задачи из заголовка
+    const taskId = req.headers['x-planfix-task'];
+    if (!taskId) {
+      console.warn('⚠️ Заголовок x-planfix-task отсутствует');
+      return res.sendStatus(200);
     }
 
+    console.log(`🔍 Получаем amoUserId для задачи ${taskId}...`);
+    const amoUserId = await planfix.getAmoUserIdFromTask(taskId);
+
+    if (!amoUserId) {
+      console.warn(`⚠️ Не удалось найти amoUserId для задачи ${taskId}`);
+      return res.sendStatus(200);
+    }
+
+    // Извлекаем текст комментария
+    let commentText = null;
     if (req.body.commentText) {
       commentText = req.body.commentText;
     } else if (req.body.comment) {
@@ -148,14 +152,15 @@ app.post('/webhook/planfix', checkSecret, async (req, res) => {
       commentText = req.body.description;
     }
 
-    if (!amoUserId || !commentText) {
-      console.warn('⚠️ Не удалось извлечь amoUserId или commentText. Доступные поля:', Object.keys(req.body));
+    if (!commentText) {
+      console.warn('⚠️ Не удалось извлечь текст комментария. Доступные поля:', Object.keys(req.body));
       return res.sendStatus(200);
     }
 
     console.log(`📤 Отправляем сообщение пользователю ${amoUserId}: ${commentText}`);
     await amo.sendMessage(amoUserId, commentText);
     console.log('✅ Сообщение успешно отправлено в amoMessenger');
+
     res.sendStatus(200);
   } catch (err) {
     console.error('❌ ОШИБКА в /webhook/planfix:');
