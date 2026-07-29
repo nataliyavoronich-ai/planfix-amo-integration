@@ -117,81 +117,67 @@ function parseIncomingMessage(body) {
 
   let attachments = [];
 
-  // Рекурсивная функция для поиска filename и link в любом объекте
-  function findFileInfo(obj) {
-    if (!obj || typeof obj !== 'object') return null;
-    
-    // Проверяем известные поля, где может быть файл
-    const knownFields = ['photo', 'file', 'video', 'audio', 'voice', 'document', 'attachment'];
-    for (const field of knownFields) {
-      if (obj[field] && typeof obj[field] === 'object') {
-        const sub = obj[field];
-        if (sub.filename && sub.link) {
-          return { name: sub.filename, url: sub.link };
-        }
-        if (sub.name && sub.url) {
-          return { name: sub.name, url: sub.url };
-        }
-        // Если внутри есть другие поля, рекурсивно ищем
-        const result = findFileInfo(sub);
-        if (result) return result;
-      }
-    }
-
-    // Если есть прямые поля filename и link
-    if (obj.filename && obj.link) {
-      return { name: obj.filename, url: obj.link };
-    }
-    if (obj.name && obj.url) {
-      return { name: obj.name, url: obj.url };
-    }
-
-    // Рекурсивно обходим все поля объекта
-    for (const key of Object.keys(obj)) {
-      if (Array.isArray(obj[key])) {
-        for (const item of obj[key]) {
-          const result = findFileInfo(item);
-          if (result) return result;
-        }
-      } else if (typeof obj[key] === 'object' && obj[key] !== null) {
-        const result = findFileInfo(obj[key]);
-        if (result) return result;
-      }
-    }
-    return null;
-  }
-
-  // Ищем вложения в message.attachments
   if (message?.attachments && Array.isArray(message.attachments)) {
     for (const file of message.attachments) {
-      const info = findFileInfo(file);
-      if (info) {
-        attachments.push(info);
+      // Если есть поле type и соответствующий объект (photo, voice, file, video, audio, document)
+      if (file.type && file[file.type]) {
+        const sub = file[file.type];
+        const link = sub.link || sub.url || '';
+        // Имя: если есть filename – используем его, иначе генерируем из типа
+        const name = sub.filename || sub.name || `${file.type}.file`;
+        if (link) {
+          attachments.push({ name, url: link });
+        } else {
+          console.warn('⚠️ Вложение без ссылки:', file);
+        }
       } else {
-        // Если не нашли, пробуем напрямую
-        const directName = file.name || file.filename || 'file';
-        const directUrl = file.url || file.link || '';
-        attachments.push({ name: directName, url: directUrl });
+        // fallback: рекурсивный поиск в объекте
+        function findFileInfo(obj) {
+          if (!obj || typeof obj !== 'object') return null;
+          if (obj.filename && obj.link) return { name: obj.filename, url: obj.link };
+          if (obj.name && obj.url) return { name: obj.name, url: obj.url };
+          if (obj.link && !obj.filename) {
+            // Если есть только link, генерируем имя
+            const ext = obj.link.split('.').pop().split('?')[0] || 'file';
+            return { name: `file.${ext}`, url: obj.link };
+          }
+          for (const key of Object.keys(obj)) {
+            if (Array.isArray(obj[key])) {
+              for (const item of obj[key]) {
+                const result = findFileInfo(item);
+                if (result) return result;
+              }
+            } else if (typeof obj[key] === 'object' && obj[key] !== null) {
+              const result = findFileInfo(obj[key]);
+              if (result) return result;
+            }
+          }
+          return null;
+        }
+        const info = findFileInfo(file);
+        if (info) {
+          attachments.push(info);
+        } else {
+          // Если ничего не найдено, добавляем с заглушкой
+          const directName = file.name || file.filename || 'file';
+          const directUrl = file.url || file.link || '';
+          if (directUrl) {
+            attachments.push({ name: directName, url: directUrl });
+          }
+        }
       }
     }
   }
 
-  // fallback на случай других структур
+  // fallback на случай, если attachments в другом месте
   if (attachments.length === 0 && body?.attachments) {
     attachments = body.attachments.map(file => {
-      const info = findFileInfo(file);
-      if (info) return info;
+      if (file.type && file[file.type]) {
+        const sub = file[file.type];
+        return { name: sub.filename || `${file.type}.file`, url: sub.link || sub.url || '' };
+      }
       return { name: file.name || file.filename || 'file', url: file.url || file.link || '' };
-    });
-  }
-
-  // Если всё ещё нет вложений, но есть files
-  if (attachments.length === 0 && body?.files) {
-    attachments = body.files.map(file => {
-      const info = findFileInfo(file);
-      if (info) return info;
-      return { name: file.name || file.filename || 'file', url: file.url || file.link || '' };
-    });
+    }).filter(a => a.url);
   }
 
   return {
