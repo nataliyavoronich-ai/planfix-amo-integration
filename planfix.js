@@ -9,13 +9,12 @@ const axios = require('axios');
 
 const ACCOUNT = process.env.PLANFIX_ACCOUNT;
 const DOMAIN = process.env.PLANFIX_DOMAIN || 'planfix.com';
-const TOKEN = process.env.PLANFIX_TOKEN;                     // REST токен
-const WEBCHAT_TOKEN = process.env.PLANFIX_WEBCHAT_TOKEN;      // Ключ провайдера веб-чата
+const TOKEN = process.env.PLANFIX_TOKEN;
+const WEBCHAT_TOKEN = process.env.PLANFIX_WEBCHAT_TOKEN;
 const CONTACT_TEMPLATE_ID = process.env.PLANFIX_CONTACT_TEMPLATE_ID;
 const PROVIDER_ID = 'amomessenger';
-const AMO_TASK_FIELD_ID = process.env.PLANFIX_AMO_TASK_FIELD_ID; // ID поля задачи amoUserId
+const AMO_TASK_FIELD_ID = process.env.PLANFIX_AMO_TASK_FIELD_ID;
 
-// REST клиент
 const restClient = axios.create({
   baseURL: `https://${ACCOUNT}.${DOMAIN}/rest`,
   headers: {
@@ -24,7 +23,6 @@ const restClient = axios.create({
   },
 });
 
-// Статусы завершённых задач
 const CLOSED_STATUS_WORDS = (
   process.env.PLANFIX_CLOSED_STATUS_WORDS ||
   'заверш,выполн,закрыт,отмен,done,closed,cancel'
@@ -48,11 +46,7 @@ async function findContactByName(name) {
     offset: 0,
     pageSize: 1,
     filters: [
-      {
-        type: 1,                // фильтр по имени
-        operator: 'equal',
-        value: name,
-      },
+      { type: 1, operator: 'equal', value: name },
     ],
     fields: 'id,name',
   };
@@ -79,13 +73,7 @@ async function createContact(amoUserName) {
     console.log('✅ Контакт создан, ID:', res.data.id);
     return res.data;
   } catch (err) {
-    if (err.response) {
-      console.error('❌ Ошибка при создании контакта:');
-      console.error('  Статус:', err.response.status);
-      console.error('  Данные ответа:', JSON.stringify(err.response.data, null, 2));
-    } else {
-      console.error('❌ Ошибка:', err.message);
-    }
+    console.error('❌ Ошибка при создании контакта:', err.response?.data || err.message);
     throw err;
   }
 }
@@ -140,7 +128,6 @@ async function createTask({ contactId, amoUserId, amoUserName, text, attachments
   params.append('contactId', String(contactId));
   params.append('contactName', amoUserName || `Пользователь ${amoUserId}`);
   params.append('title', `Обращение из amoMessenger: ${amoUserName || amoUserId}`);
-  // Передаём amoUserId как дополнительное поле задачи
   params.append('data_amoUserId', String(amoUserId));
 
   if (attachments && attachments.length > 0) {
@@ -165,19 +152,13 @@ async function createTask({ contactId, amoUserId, amoUserName, text, attachments
     console.log('📦 Полный ответ от Планфикса:', JSON.stringify(res.data, null, 2));
     return res.data;
   } catch (err) {
-    if (err.response) {
-      console.error('❌ Ошибка при отправке в Планфикс:');
-      console.error('  Статус:', err.response.status);
-      console.error('  Данные ответа:', JSON.stringify(err.response.data, null, 2));
-    } else {
-      console.error('❌ Ошибка:', err.message);
-    }
+    console.error('❌ Ошибка при отправке в Планфикс:', err.response?.data || err.message);
     throw err;
   }
 }
 
 // -----------------------------------------------------------
-// ПОЛУЧЕНИЕ amoUserId ИЗ ЗАДАЧИ ПО ЕЁ ID (через /task/list)
+// ПОЛУЧЕНИЕ amoUserId ИЗ ЗАДАЧИ ПО ЕЁ ID
 // -----------------------------------------------------------
 async function getAmoUserIdFromTask(taskId) {
   try {
@@ -200,7 +181,6 @@ async function getAmoUserIdFromTask(taskId) {
     }
     const task = tasks[0];
     const customFields = task.customFields || [];
-    // Ищем поле с именем "amoUserId" или по ID
     const field = customFields.find(f => f.field?.name === 'amoUserId' || f.field?.id === Number(AMO_TASK_FIELD_ID));
     if (field) {
       console.log(`✅ Найдено поле amoUserId: ${field.value}`);
