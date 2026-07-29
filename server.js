@@ -61,14 +61,22 @@ app.post('/webhook/amomessenger', checkSecret, async (req, res) => {
   try {
     const { userId, userName, text, attachments, raw } = amo.parseIncomingMessage(req.body);
 
-    console.log('Входящее сообщение от', userId, ':', text);
+    // Если текст пустой, но есть вложения – формируем описание
+    let messageText = text;
+    if (!messageText && attachments && attachments.length > 0) {
+      const names = attachments.map(a => a.name).join(', ');
+      messageText = `Файлы: ${names}`;
+    }
+
+    console.log('Входящее сообщение от', userId, ':', messageText);
     if (attachments && attachments.length > 0) {
       console.log('📎 Вложений:', attachments.length);
       attachments.forEach(a => console.log('  -', a.name, '=>', a.url));
     }
 
-    if (!userId || !text) {
-      console.log('Пустое сообщение или нет ID пользователя, игнорируем');
+    // Проверяем: если нет текста и нет вложений – игнорируем
+    if (!userId || (!messageText && (!attachments || attachments.length === 0))) {
+      console.log('Пустое сообщение без содержимого, игнорируем');
       return res.sendStatus(200);
     }
 
@@ -89,14 +97,16 @@ app.post('/webhook/amomessenger', checkSecret, async (req, res) => {
     const openTask = await planfix.findOpenTaskByContactId(contactId);
 
     if (openTask) {
-      await planfix.addComment(openTask.id, text);
+      // Добавляем комментарий с текстом и вложениями (если нужны)
+      await planfix.addComment(openTask.id, messageText);
       console.log('➕ Комментарий добавлен в задачу #' + openTask.id);
     } else {
+      // Создаём новую задачу
       const newTask = await planfix.createTask({
         contactId,
         amoUserId: userId,
         amoUserName: realUserName,
-        text,
+        text: messageText,
         attachments,
       });
       console.log('🆕 Создана новая задача:', JSON.stringify(newTask));
