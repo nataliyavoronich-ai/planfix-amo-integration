@@ -107,23 +107,45 @@ async function getUserInfo(userUuid) {
 }
 
 // -----------------------------------------------------------
-// Разбор входящего сообщения от amoMessenger (исправлено!)
+// Разбор входящего сообщения от amoMessenger (с вложениями)
 // -----------------------------------------------------------
 function parseIncomingMessage(body) {
-  // Пытаемся извлечь данные из вложенной структуры
   const message = body?._embedded?.message;
   const author = message?.author;
   const userId = author?.user_id;
   const text = message?.text;
 
-  // Если структура другая, пробуем старые варианты
+  // Извлекаем вложения – могут быть в разных местах
+  let attachments = [];
+  if (message?.attachments && Array.isArray(message.attachments)) {
+    attachments = message.attachments.map(file => ({
+      name: file.name || 'file',
+      url: file.url || file.link || file.href,
+    }));
+  } else if (body?.attachments && Array.isArray(body.attachments)) {
+    attachments = body.attachments.map(file => ({
+      name: file.name || 'file',
+      url: file.url || file.link || file.href,
+    }));
+  }
+
+  // На случай, если структура другая – пробуем найти files
+  if (attachments.length === 0 && body?.files) {
+    attachments = body.files.map(file => ({
+      name: file.name || 'file',
+      url: file.url || file.link || file.href,
+    }));
+  }
+
+  // Запасные варианты для userId и text
   const fallbackUserId = body.from?.id || body.userId || body.sender_id || body.user_id;
   const fallbackText = body.message?.text || body.text || body.message;
 
   return {
     userId: userId || fallbackUserId,
-    userName: undefined, // имя не приходит, будем запрашивать через API
+    userName: undefined,
     text: text || fallbackText,
+    attachments,
     raw: body,
   };
 }
