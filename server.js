@@ -14,46 +14,38 @@ const SECRET = process.env.WEBHOOK_SECRET;
 
 function checkSecret(req, res, next) {
   if (req.query.secret !== SECRET) {
+    console.warn('⚠️ Неверный секрет в запросе:', req.query.secret);
     return res.status(403).send('forbidden');
   }
   next();
 }
 
 // -----------------------------------------------------------
-// OAuth callback для получения токена amoMessenger
+// OAuth callback
 // -----------------------------------------------------------
 app.get('/oauth', async (req, res) => {
   const { code } = req.query;
-
   if (!code) {
     return res.status(400).send('Не пришёл параметр code');
   }
-
-  console.log('Получен код авторизации:', code.slice(0, 10) + '...');
-
   try {
     const tokenData = await amo.exchangeCodeForToken(code);
     console.log('✅ Получен access_token:', tokenData.access_token);
-    console.log('  refresh_token:', tokenData.refresh_token);
-    console.log('  expires_in:', tokenData.expires_in);
-
     const context = await amo.validateToken(tokenData.access_token);
-    console.log('Контекст токена (кто установил приложение):', context);
-
+    console.log('Контекст:', context);
     res.send(`
-      <h2>Приложение успешно подключено!</h2>
+      <h2>Приложение подключено!</h2>
       <p>Токен: <code>${tokenData.access_token}</code></p>
-      <p>Скопируйте этот токен и вставьте его в переменную окружения <strong>AMO_ACCESS_TOKEN</strong> на Render, затем перезапустите сервис.</p>
-      <p>Refresh токен: <code>${tokenData.refresh_token}</code> (сохраните его для обновления)</p>
+      <p>Скопируйте его в переменную AMO_ACCESS_TOKEN на Render и перезапустите.</p>
     `);
   } catch (err) {
-    console.error('❌ Ошибка при обмене кода:');
-    res.status(500).send('Не удалось получить токен. Посмотрите логи на Render для деталей.');
+    console.error('❌ Ошибка OAuth:', err);
+    res.status(500).send('Ошибка получения токена, смотрите логи.');
   }
 });
 
 // -----------------------------------------------------------
-// Вебхук от amoMessenger (входящие сообщения + вложения)
+// Вебхук от amoMessenger
 // -----------------------------------------------------------
 app.post('/webhook/amomessenger', checkSecret, async (req, res) => {
   console.log('📩 Полный body от amoMessenger:', JSON.stringify(req.body, null, 2));
@@ -61,7 +53,7 @@ app.post('/webhook/amomessenger', checkSecret, async (req, res) => {
   try {
     const { userId, userName, text, attachments, raw } = amo.parseIncomingMessage(req.body);
 
-    let messageText = text;
+    let messageText = text || '';
     if (!messageText && attachments && attachments.length > 0) {
       const names = attachments.map(a => a.name).join(', ');
       messageText = `📎 Вложения: ${names}`;
@@ -69,7 +61,6 @@ app.post('/webhook/amomessenger', checkSecret, async (req, res) => {
 
     console.log('Входящее сообщение от', userId, ':', messageText);
     if (attachments && attachments.length > 0) {
-      console.log('📎 Вложений:', attachments.length);
       attachments.forEach(a => console.log('  -', a.name, '=>', a.url));
     }
 
@@ -78,26 +69,27 @@ app.post('/webhook/amomessenger', checkSecret, async (req, res) => {
       return res.sendStatus(200);
     }
 
+    // Получаем реальное имя
     let realUserName = userName;
-    if (!realUserName || realUserName.startsWith('Пользователь ') || realUserName === userId) {
-      console.log(`👤 Имя пользователя не получено из вебхука, запрашиваем через API...`);
+    if (!realUserName || realUserName.startsWith('Пользователь ')) {
       const nameFromApi = await amo.getUserInfo(userId);
-      if (nameFromApi) {
-        realUserName = nameFromApi;
-        console.log(`✅ Имя получено из API: ${realUserName}`);
-      } else {
-        realUserName = userId;
-        console.log(`⚠️ Не удалось получить имя, используем ID: ${realUserName}`);
-      }
+      realUserName = nameFromApi || userId;
+      console.log(`👤 Имя пользователя: ${realUserName}`);
     }
 
+    console.log('🔍 Ищем/создаём контакт...');
     const contactId = await planfix.findOrCreateContactId(userId, realUserName);
+    console.log('✅ ID контакта:', contactId);
+
+    console.log('🔍 Ищем открытую задачу...');
     const openTask = await planfix.findOpenTaskByContactId(contactId);
 
     if (openTask) {
+      console.log('➕ Добавляем комментарий в задачу #' + openTask.id);
       await planfix.addComment(openTask.id, messageText);
-      console.log('➕ Комментарий добавлен в задачу #' + openTask.id);
+      console.log('✅ Комментарий добавлен');
     } else {
+      console.log('🆕 Создаём новую задачу...');
       const newTask = await planfix.createTask({
         contactId,
         amoUserId: userId,
@@ -105,31 +97,35 @@ app.post('/webhook/amomessenger', checkSecret, async (req, res) => {
         text: messageText,
         attachments,
       });
-      console.log('🆕 Создана новая задача:', JSON.stringify(newTask));
+      console.log('✅ Задача создана:', JSON.stringify(newTask));
     }
 
     res.sendStatus(200);
   } catch (err) {
-    console.error('❌ Ошибка обработки сообщения из amoMessenger:', err.message);
+    // ПОДРОБНЫЙ ВЫВОД ОШИБКИ
+    console.error('❌ ОШИБКА в /webhook/amomessenger:');
+    console.error('  Сообщение:', err.message);
+    console.error('  Стек:', err.stack);
+    if (err.response) {
+      console.error('  Ответ от сервера:', err.response.status, JSON.stringify(err.response.data, null, 2));
+    }
+    console.error('  Полный объект ошибки:', JSON.stringify(err, Object.getOwnPropertyNames(err), 2));
     res.sendStatus(500);
   }
 });
 
 // -----------------------------------------------------------
-// Вебхук от Planfix (ответы из задач → в amoMessenger)
+// Вебхук от Planfix
 // -----------------------------------------------------------
 app.post('/webhook/planfix', checkSecret, async (req, res) => {
   console.log('📩 Полный запрос от Планфикса:');
   console.log('  Headers:', req.headers);
   console.log('  Body:', JSON.stringify(req.body, null, 2));
-  console.log('  Query:', req.query);
-  console.log('  Params:', req.params);
 
   try {
     let amoUserId = null;
     let commentText = null;
 
-    // Пытаемся извлечь amoUserId из разных возможных мест
     if (req.body.amoUserId) {
       amoUserId = req.body.amoUserId;
     } else if (req.body.userId) {
@@ -138,12 +134,8 @@ app.post('/webhook/planfix', checkSecret, async (req, res) => {
       amoUserId = req.body.contactId;
     } else if (req.body.data && req.body.data.amoUserId) {
       amoUserId = req.body.data.amoUserId;
-    } else if (req.body.customFields && Array.isArray(req.body.customFields)) {
-      const field = req.body.customFields.find(f => f.fieldId === process.env.PLANFIX_AMO_CONTACT_FIELD_ID);
-      if (field) amoUserId = field.value;
     }
 
-    // Извлечение текста комментария
     if (req.body.commentText) {
       commentText = req.body.commentText;
     } else if (req.body.comment) {
@@ -154,30 +146,28 @@ app.post('/webhook/planfix', checkSecret, async (req, res) => {
       commentText = req.body.message;
     } else if (req.body.description) {
       commentText = req.body.description;
-    } else if (req.body.commentData && req.body.commentData.text) {
-      commentText = req.body.commentData.text;
     }
 
     if (!amoUserId || !commentText) {
-      console.warn('⚠️ Не удалось извлечь amoUserId или commentText из запроса Планфикса.');
-      console.warn('  Доступные поля:', Object.keys(req.body));
+      console.warn('⚠️ Не удалось извлечь amoUserId или commentText. Доступные поля:', Object.keys(req.body));
       return res.sendStatus(200);
     }
 
     console.log(`📤 Отправляем сообщение пользователю ${amoUserId}: ${commentText}`);
     await amo.sendMessage(amoUserId, commentText);
     console.log('✅ Сообщение успешно отправлено в amoMessenger');
-
     res.sendStatus(200);
   } catch (err) {
-    console.error('❌ Ошибка обработки уведомления из Планфикс:', err.message);
-    res.sendStatus(200); // всегда отвечаем 200, чтобы Планфикс не переотправлял
+    console.error('❌ ОШИБКА в /webhook/planfix:');
+    console.error('  Сообщение:', err.message);
+    console.error('  Стек:', err.stack);
+    if (err.response) {
+      console.error('  Ответ от сервера:', err.response.status, JSON.stringify(err.response.data, null, 2));
+    }
+    res.sendStatus(200);
   }
 });
 
-// -----------------------------------------------------------
-// Проверка работоспособности
-// -----------------------------------------------------------
 app.get('/', (req, res) => {
   res.send('Интеграция работает 🚀');
 });
