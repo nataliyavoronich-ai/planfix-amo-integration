@@ -61,7 +61,6 @@ app.post('/webhook/amomessenger', checkSecret, async (req, res) => {
   try {
     const { userId, userName, text, attachments, raw } = amo.parseIncomingMessage(req.body);
 
-    // Если текст пустой, но есть вложения – формируем описание
     let messageText = text;
     if (!messageText && attachments && attachments.length > 0) {
       const names = attachments.map(a => a.name).join(', ');
@@ -74,13 +73,12 @@ app.post('/webhook/amomessenger', checkSecret, async (req, res) => {
       attachments.forEach(a => console.log('  -', a.name, '=>', a.url));
     }
 
-    // Проверяем: если нет текста и нет вложений – игнорируем
     if (!userId || (!messageText && (!attachments || attachments.length === 0))) {
       console.log('Пустое сообщение без содержимого, игнорируем');
       return res.sendStatus(200);
     }
 
-    // Получаем реальное имя пользователя (если не пришло в вебхуке)
+    // Получаем реальное имя пользователя
     let realUserName = userName;
     if (!realUserName || realUserName.startsWith('Пользователь ') || realUserName === userId) {
       console.log(`👤 Имя пользователя не получено из вебхука, запрашиваем через API...`);
@@ -94,20 +92,17 @@ app.post('/webhook/amomessenger', checkSecret, async (req, res) => {
       }
     }
 
-    // Находим или создаём контакт по email (в котором хранится amoUserId)
-    // ВАЖНО: передаём userId как первый аргумент (для поиска по email)
-    const contactId = await planfix.findOrCreateContactId(userId, realUserName);
+    // НАХОДИМ ИЛИ СОЗДАЁМ КОНТАКТ ТОЛЬКО ПО ИМЕНИ
+    const contactId = await planfix.findOrCreateContactId(realUserName);
     console.log(`✅ Контакт ID: ${contactId}`);
 
     // Ищем открытую задачу по контакту
     const openTask = await planfix.findOpenTaskByContactId(contactId);
 
     if (openTask) {
-      // Добавляем комментарий в существующую задачу
       await planfix.addComment(openTask.id, messageText);
       console.log('➕ Комментарий добавлен в задачу #' + openTask.id);
     } else {
-      // Создаём новую задачу с полем data_amoUserId
       const newTask = await planfix.createTask({
         contactId,
         amoUserId: userId,
@@ -134,29 +129,31 @@ app.post('/webhook/planfix', checkSecret, async (req, res) => {
   console.log('  Body:', JSON.stringify(req.body, null, 2));
 
   try {
-    // 1. Получаем ID задачи из заголовка
-    const taskId = req.headers['x-planfix-task'];
-    if (!taskId) {
-      console.warn('⚠️ Заголовок x-planfix-task отсутствует');
-      return res.sendStatus(200);
-    }
+    // 1. Сначала пытаемся взять amoUserId из тела запроса (если сценарий его передаёт)
+    let amoUserId = req.body.amoUserId || null;
+    let commentText = req.body.commentText || req.body.comment || req.body.text || req.body.message || req.body.description;
 
-    console.log(`🔍 Получаем amoUserId для задачи ${taskId}...`);
-    const amoUserId = await planfix.getAmoUserIdFromTask(taskId);
+    // 2. Если amoUserId не пришёл в теле, пытаемся получить из задачи по ID
+    if (!amoUserId) {
+      const taskId = req.headers['x-planfix-task'];
+      if (taskId) {
+        console.log(`🔍 Получаем amoUserId для задачи ${taskId} через API...`);
+        amoUserId = await planfix.getAmoUserIdFromTask(taskId);
+      } else {
+        console.warn('⚠️ Заголовок x-planfix-task отсутствует');
+      }
+    }
 
     if (!amoUserId) {
-      console.warn(`⚠️ Не удалось найти amoUserId для задачи ${taskId}`);
+      console.warn('⚠️ Не удалось найти amoUserId');
       return res.sendStatus(200);
     }
 
-    // 2. Извлекаем текст комментария
-    let commentText = req.body.commentText || req.body.comment || req.body.text || req.body.message || req.body.description;
     if (!commentText) {
       console.warn('⚠️ Не удалось извлечь текст комментария. Доступные поля:', Object.keys(req.body));
       return res.sendStatus(200);
     }
 
-    // 3. Отправляем сообщение в amoMessenger
     console.log(`📤 Отправляем сообщение пользователю ${amoUserId}: ${commentText}`);
     await amo.sendMessage(amoUserId, commentText);
     console.log('✅ Сообщение успешно отправлено в amoMessenger');
@@ -164,7 +161,6 @@ app.post('/webhook/planfix', checkSecret, async (req, res) => {
     res.sendStatus(200);
   } catch (err) {
     console.error('❌ Ошибка обработки уведомления из Планфикс:', err.message);
-    // Всегда отвечаем 200, чтобы Планфикс не переотправлял
     res.sendStatus(200);
   }
 });
