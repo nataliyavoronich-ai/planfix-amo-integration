@@ -1,5 +1,7 @@
 // ============================================================
 //  МОДУЛЬ РАБОТЫ С ПЛАНФИКС
+//  Использует API для чатов (webchat)
+//  Документация: https://help.planfix.com/restapidocs/
 // ============================================================
 
 const axios = require('axios');
@@ -9,21 +11,29 @@ const DOMAIN = process.env.PLANFIX_DOMAIN || 'planfix.com';
 const TOKEN = process.env.PLANFIX_TOKEN;
 const CONTACT_FIELD_ID = process.env.PLANFIX_AMO_CONTACT_FIELD_ID;
 const CONTACT_TEMPLATE_ID = process.env.PLANFIX_CONTACT_TEMPLATE_ID;
-// Временно игнорируем PROJECT_ID – будем создавать задачи без проекта
-// const PROJECT_ID = process.env.PLANFIX_PROJECT_ID;
-const RESPONSIBLE_ID = 1; // ваш ID
+const PROJECT_ID = process.env.PLANFIX_PROJECT_ID;
 
-const BASE_URL = `https://${ACCOUNT}.${DOMAIN}/rest`;
+// Уникальный идентификатор вашей интеграции (придумайте что-то своё)
+// Он не должен содержать символ "~"
+const PROVIDER_ID = 'amomessenger';
 
-const client = axios.create({
-  baseURL: BASE_URL,
+// Базовый URL для API чатов
+const CHAT_API_URL = `https://${ACCOUNT}.${DOMAIN}/webchat/api`;
+
+// -----------------------------------------------------------
+// ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ (поиск контактов через REST API)
+// -----------------------------------------------------------
+
+// Создаём отдельный клиент для REST API (для поиска контактов)
+const restClient = axios.create({
+  baseURL: `https://${ACCOUNT}.${DOMAIN}/rest`,
   headers: {
     Authorization: `Bearer ${TOKEN}`,
     'Content-Type': 'application/json',
   },
 });
 
-// Статусы завершённых задач
+// Названия статусов, которые считаем "задача завершена"
 const CLOSED_STATUS_WORDS = (
   process.env.PLANFIX_CLOSED_STATUS_WORDS ||
   'заверш,выполн,закрыт,отмен,done,closed,cancel'
@@ -39,7 +49,7 @@ function isClosedStatus(status) {
 }
 
 // -----------------------------------------------------------
-// Поиск контакта по amoMessenger ID
+// ПОИСК КОНТАКТА по amoMessenger ID (через REST API)
 // -----------------------------------------------------------
 async function findContactByAmoUserId(amoUserId) {
   const body = {
@@ -55,14 +65,14 @@ async function findContactByAmoUserId(amoUserId) {
     ],
     fields: 'id,name',
   };
-  const res = await client.post('/contact/list', body);
+  const res = await restClient.post('/contact/list', body);
   console.log('RAW ОТВЕТ Планфикс при поиске контакта:', JSON.stringify(res.data, null, 2));
   const contacts = res.data.contacts || [];
   return contacts.length ? contacts[0] : null;
 }
 
 // -----------------------------------------------------------
-// Создание контакта
+// СОЗДАНИЕ КОНТАКТА (через REST API)
 // -----------------------------------------------------------
 async function createContact(amoUserId, amoUserName) {
   const body = {
@@ -76,11 +86,14 @@ async function createContact(amoUserId, amoUserName) {
     ],
   };
   Object.keys(body).forEach(key => body[key] === undefined && delete body[key]);
-  const res = await client.post('/contact/', body);
+  const res = await restClient.post('/contact/', body);
   console.log('RAW ОТВЕТ Планфикс при создании контакта:', JSON.stringify(res.data, null, 2));
   return res.data;
 }
 
+// -----------------------------------------------------------
+// НАЙТИ ИЛИ СОЗДАТЬ КОНТАКТ
+// -----------------------------------------------------------
 async function findOrCreateContactId(amoUserId, amoUserName) {
   let contact = await findContactByAmoUserId(amoUserId);
   if (!contact) {
@@ -90,7 +103,7 @@ async function findOrCreateContactId(amoUserId, amoUserName) {
 }
 
 // -----------------------------------------------------------
-// Поиск открытой задачи по контакту
+// ПОИСК ОТКРЫТОЙ ЗАДАЧИ по контакту (через REST API)
 // -----------------------------------------------------------
 async function findOpenTaskByContactId(contactId) {
   const body = {
@@ -105,7 +118,7 @@ async function findOpenTaskByContactId(contactId) {
     ],
     fields: 'id,name,status',
   };
-  const res = await client.post('/task/list', body);
+  const res = await restClient.post('/task/list', body);
   console.log('RAW ОТВЕТ Планфикс при поиске открытой задачи:', JSON.stringify(res.data, null, 2));
   const tasks = res.data.tasks || [];
   const openTask = tasks.find((t) => !isClosedStatus(t.status));
@@ -113,30 +126,37 @@ async function findOpenTaskByContactId(contactId) {
 }
 
 // -----------------------------------------------------------
-// СОЗДАНИЕ ЗАДАЧИ (исправленная версия)
+// ОТПРАВКА СООБЩЕНИЯ В ПЛАНФИКС (через API чатов)
+// Используется команда newMessage из документации
 // -----------------------------------------------------------
 async function createTask({ contactId, amoUserId, amoUserName, text }) {
-  // Формируем тело с объектами { id: ... } для связей
-  const body = {
-    name: `Обращение из amoMessenger: ${amoUserName || amoUserId}`,
-    description: text,
-    contact: { id: contactId },
-    responsible: { id: RESPONSIBLE_ID },
-    // project: { id: Number(PROJECT_ID) }  // пока убираем, чтобы проверить
-  };
+  // Формируем параметры запроса в формате form-urlencoded
+  const params = new URLSearchParams();
+  params.append('cmd', 'newMessage');
+  params.append('providerId', PROVIDER_ID);
+  params.append('chatId', String(amoUserId)); // Используем amoUserId как chatId
+  params.append('planfix_token', TOKEN);
+  params.append('message', text);
+  params.append('contactId', String(contactId));
+  params.append('contactName', amoUserName || `Пользователь ${amoUserId}`);
+  params.append('title', `Обращение из amoMessenger: ${amoUserName || amoUserId}`);
 
-  // Удаляем undefined поля (если есть)
-  Object.keys(body).forEach(key => body[key] === undefined && delete body[key]);
-
-  console.log('📤 Отправляем запрос на создание задачи:', JSON.stringify(body, null, 2));
+  console.log('📤 Отправляем запрос в Планфикс (webchat/api):');
+  console.log('  URL:', CHAT_API_URL);
+  console.log('  Параметры:', params.toString());
 
   try {
-    const res = await client.post('/task/', body);
-    console.log('✅ Задача создана:', JSON.stringify(res.data, null, 2));
+    const res = await axios.post(CHAT_API_URL, params, {
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+      },
+    });
+
+    console.log('✅ Сообщение отправлено в Планфикс:', res.status, res.data);
     return res.data;
   } catch (err) {
     if (err.response) {
-      console.error('❌ Ошибка при создании задачи:');
+      console.error('❌ Ошибка при отправке в Планфикс:');
       console.error('  Статус:', err.response.status);
       console.error('  Данные ответа:', JSON.stringify(err.response.data, null, 2));
     } else {
@@ -146,10 +166,12 @@ async function createTask({ contactId, amoUserId, amoUserName, text }) {
   }
 }
 
-// Добавление комментария
+// -----------------------------------------------------------
+// ДОБАВЛЕНИЕ КОММЕНТАРИЯ (через REST API)
+// -----------------------------------------------------------
 async function addComment(taskId, text) {
   const body = { description: text };
-  const res = await client.post(`/task/${taskId}/comments/`, body);
+  const res = await restClient.post(`/task/${taskId}/comments/`, body);
   return res.data;
 }
 
