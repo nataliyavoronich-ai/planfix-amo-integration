@@ -1,46 +1,67 @@
 // ============================================================
 //  МОДУЛЬ РАБОТЫ С amoMessenger
-//  Основано на официальном туториале и примерах кода
-//  (webhook.php, amo_authorization.php) с портала разработчика.
 // ============================================================
- 
+
 const axios = require('axios');
- 
-const ACCESS_TOKEN = process.env.AMO_ACCESS_TOKEN; // токен вашего приложения-бота
-const API_BASE_URL = process.env.AMO_API_BASE_URL; // адрес API для методов вроде sendMessage
+
+const ACCESS_TOKEN = process.env.AMO_ACCESS_TOKEN;
+const API_BASE_URL = process.env.AMO_API_BASE_URL;
 const CLIENT_ID = process.env.AMO_CLIENT_ID;
 const CLIENT_SECRET = process.env.AMO_CLIENT_SECRET;
-const REDIRECT_URI = process.env.AMO_REDIRECT_URI; // тот же адрес /oauth, что указан в кабинете разработчика
- 
-// Сервер авторизации amoMessenger — ОТДЕЛЬНЫЙ домен, не путать
-// с API_BASE_URL, который используется для отправки сообщений
+const REDIRECT_URI = process.env.AMO_REDIRECT_URI;
+
 const OAUTH_BASE_URL = 'https://id.amo.tm';
- 
+
 // -----------------------------------------------------------
-// Обмен временного кода (?code=...) на постоянный access_token
+// Обмен временного кода на постоянный access_token
 // -----------------------------------------------------------
-// Взято из официального туториала amoMessenger. Токен запрашивается
-// как обычная веб-форма (не JSON!), поэтому используем querystring.
 async function exchangeCodeForToken(code) {
+  if (!CLIENT_ID || !CLIENT_SECRET || !REDIRECT_URI) {
+    throw new Error('Отсутствуют переменные окружения: CLIENT_ID, CLIENT_SECRET или REDIRECT_URI');
+  }
+
   const params = new URLSearchParams();
   params.append('grant_type', 'authorization_code');
   params.append('client_id', CLIENT_ID);
   params.append('client_secret', CLIENT_SECRET);
   params.append('redirect_uri', REDIRECT_URI);
   params.append('code', code);
- 
-  const res = await axios.post(
-    `${OAUTH_BASE_URL}/oauth2/access_token`,
-    params,
-    { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } }
-  );
- 
-  return res.data; // { access_token, refresh_token, expires_in, ... }
+
+  console.log('Отправляем запрос на обмен токена:');
+  console.log('  grant_type = authorization_code');
+  console.log('  client_id =', CLIENT_ID);
+  console.log('  client_secret =', CLIENT_SECRET.slice(0, 6) + '...' + CLIENT_SECRET.slice(-4));
+  console.log('  redirect_uri =', REDIRECT_URI);
+  console.log('  code =', code.slice(0, 10) + '... (скрыто)');
+
+  try {
+    const res = await axios.post(
+      `${OAUTH_BASE_URL}/oauth2/access_token`,
+      params,
+      { 
+        headers: { 
+          'Content-Type': 'application/x-www-form-urlencoded',
+          'Accept': 'application/json'
+        } 
+      }
+    );
+    console.log('✅ Токен успешно получен');
+    return res.data;
+  } catch (err) {
+    console.error('❌ Ошибка обмена кода на токен:');
+    if (err.response) {
+      console.error('  Статус:', err.response.status);
+      console.error('  Заголовки:', err.response.headers);
+      console.error('  Тело ответа (причина):', JSON.stringify(err.response.data, null, 2));
+    } else {
+      console.error('  Сообщение:', err.message);
+    }
+    throw err;
+  }
 }
- 
+
 // -----------------------------------------------------------
-// Узнаём "контекст" токена: от имени какого пользователя/компании
-// он выдан. Полезно, чтобы понимать, кто установил приложение.
+// Проверка контекста токена
 // -----------------------------------------------------------
 async function validateToken(accessToken) {
   const res = await axios.get(`${OAUTH_BASE_URL}/oauth2/validate`, {
@@ -49,63 +70,89 @@ async function validateToken(accessToken) {
       Accept: 'application/json',
     },
   });
-  return res.data; // { user_uuid, company_uuid, client_uuid }
+  return res.data;
 }
- 
+
 // -----------------------------------------------------------
-// Разбор входящего сообщения (то, что amoMessenger присылает
-// на наш /webhook/amomessenger при получении сообщения)
+// Получение информации о пользователе по его UUID
+// -----------------------------------------------------------
+async function getUserInfo(userUuid) {
+  if (!userUuid) {
+    console.warn('⚠️ getUserInfo вызван без userUuid');
+    return null;
+  }
+
+  try {
+    const url = `https://api.amo.io/v1.0/users/${userUuid}`;
+    console.log(`🔍 Запрашиваем информацию о пользователе ${userUuid}...`);
+    
+    const response = await axios.get(url, {
+      headers: {
+        'Authorization': `Bearer ${ACCESS_TOKEN}`,
+        'Accept': 'application/json',
+      },
+    });
+
+    // По документации ответ содержит поле name
+    const userName = response.data?.name || null;
+    console.log(`✅ Получено имя пользователя: ${userName}`);
+    return userName;
+  } catch (error) {
+    console.error(`❌ Ошибка при получении информации о пользователе ${userUuid}:`, error.message);
+    if (error.response) {
+      console.error('  Статус:', error.response.status);
+      console.error('  Данные:', JSON.stringify(error.response.data, null, 2));
+    }
+    return null;
+  }
+}
+
+// -----------------------------------------------------------
+// Разбор входящего сообщения от amoMessenger
 // -----------------------------------------------------------
 function parseIncomingMessage(body) {
-  // Реальная структура вебхука amoMessenger (из официального
-  // примера webhook.php):
-  // body._embedded.message               — само сообщение
-  // body._embedded.conversation_identity — "адрес" переписки,
-  //                                        нужен для ответа
-  // body._embedded.context.company_id    — id компании
-  const message = body?._embedded?.message || {};
-  const conversationIdentity = body?._embedded?.conversation_identity || {};
- 
+  let data = body;
+  if (typeof body === 'string') {
+    try {
+      data = JSON.parse(body);
+    } catch (e) {
+      data = body;
+    }
+  }
+
+  // Универсальный парсинг – пробуем разные возможные поля
+  const userId = data.from?.id || data.userId || data.sender_id || data.user_id;
+  const userName = data.from?.name || data.userName || data.sender_name || data.user_name;
+  const text = data.message?.text || data.text || data.message;
+
   return {
-    // Именно conversation_identity.direct_id используется потом
-    // в адресе запроса на отправку сообщения (см. sendMessage).
-    // Поэтому храним его в Планфикс как "amoMessenger ID".
-    userId: conversationIdentity.direct_id,
-    userName: message.author?.name || message.from?.name || null,
-    text: message.text,
-    messageId: message.id,
-    conversationIdentity,
-    raw: body,
+    userId,
+    userName,
+    text,
+    raw: data,
   };
 }
- 
+
 // -----------------------------------------------------------
-// Отправка сообщения пользователю amoMessenger
+// Отправка сообщения пользователю
 // -----------------------------------------------------------
-// Точный формат из официального примера (webhook.php):
-//   POST https://api.amo.io/v1.3/direct/{direct_id}/sendMessage
-//   body: { text }  (либо ещё attachments/reply_to при желании)
-// {direct_id} — это то же значение, что мы сохранили как
-// "amoMessenger ID" в задаче Планфикс (userId из parseIncomingMessage).
-async function sendMessage(directId, text) {
-  const url = `${API_BASE_URL}/direct/${directId}/sendMessage`;
- 
+async function sendMessage(userId, text) {
+  const url = `${API_BASE_URL}/direct/${userId}/sendMessage`;
   const body = { text };
- 
+
   const res = await axios.post(url, body, {
     headers: {
       Authorization: `Bearer ${ACCESS_TOKEN}`,
       'Content-Type': 'application/json',
     },
   });
- 
   return res.data;
 }
- 
+
 module.exports = {
   parseIncomingMessage,
   sendMessage,
   exchangeCodeForToken,
   validateToken,
+  getUserInfo,   // <-- добавлено
 };
- 
