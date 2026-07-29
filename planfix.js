@@ -2,6 +2,14 @@
 //  МОДУЛЬ РАБОТЫ С ПЛАНФИКС
 //  Использует официальный REST API Планфикс:
 //  https://help.planfix.com/restapidocs/
+//
+//  НОВАЯ ЛОГИКА:
+//  amoMessenger ID хранится в пользовательском поле НА КОНТАКТЕ
+//  (а не на задаче, как было раньше — там мы упёрлись в
+//  ограничение доступа поля по процессу/шаблону задачи).
+//  Дальше задача связывается с этим контактом через стандартное,
+//  встроенное поле "Контрагент" — оно не кастомное и не требует
+//  отдельных разрешений.
 // ============================================================
 
 const axios = require('axios');
@@ -9,7 +17,7 @@ const axios = require('axios');
 const ACCOUNT = process.env.PLANFIX_ACCOUNT;      // например "zlmktest"
 const DOMAIN = process.env.PLANFIX_DOMAIN || 'planfix.com'; // planfix.com или planfix.ru
 const TOKEN = process.env.PLANFIX_TOKEN;          // токен из Управление аккаунтом -> Доступ к API
-const CUSTOM_FIELD_ID = process.env.PLANFIX_AMO_FIELD_ID; // ID пользовательского поля "amoMessenger ID"
+const CONTACT_FIELD_ID = process.env.PLANFIX_AMO_CONTACT_FIELD_ID; // ID поля "amoMessenger ID" НА КОНТАКТЕ
 const PROJECT_ID = process.env.PLANFIX_PROJECT_ID; // ID проекта, в который создавать задачи (необязательно)
 
 const BASE_URL = `https://${ACCOUNT}.${DOMAIN}/rest`;
@@ -40,19 +48,77 @@ function isClosedStatus(status) {
   return CLOSED_STATUS_WORDS.some((word) => name.includes(word));
 }
 
-// Ищем среди задач ту, что:
-//  - в кастомном поле "amoMessenger ID" стоит нужный ID пользователя
-//  - ещё не завершена (проверяем по названию статуса, см. isClosedStatus)
-async function findOpenTaskByAmoUserId(amoUserId) {
+// -----------------------------------------------------------
+// Ищем контакт в Планфикс по значению поля "amoMessenger ID"
+// -----------------------------------------------------------
+async function findContactByAmoUserId(amoUserId) {
+  const body = {
+    offset: 0,
+    pageSize: 1,
+    filters: [
+      {
+        type: 4101, // Пользовательское поле контакта типа "Строка"
+        field: Number(CONTACT_FIELD_ID),
+        operator: 'equal',
+        value: String(amoUserId),
+      },
+    ],
+    fields: 'id,name',
+  };
+
+  const res = await client.post('/contact/list', body);
+
+  console.log('RAW ОТВЕТ Планфикс при поиске контакта:', JSON.stringify(res.data, null, 2));
+
+  const contacts = res.data.contacts || [];
+  return contacts.length ? contacts[0] : null;
+}
+
+// -----------------------------------------------------------
+// Создаём новый контакт с привязкой к amoMessenger ID
+// -----------------------------------------------------------
+async function createContact(amoUserId, amoUserName) {
+  const body = {
+    name: amoUserName || `amoMessenger ${amoUserId}`,
+    customFieldData: [
+      {
+        field: { id: Number(CONTACT_FIELD_ID) },
+        value: String(amoUserId),
+      },
+    ],
+  };
+
+  const res = await client.post('/contact/', body);
+
+  console.log('RAW ОТВЕТ Планфикс при создании контакта:', JSON.stringify(res.data, null, 2));
+
+  return res.data;
+}
+
+// Находит контакт по amoUserId, а если его ещё нет — создаёт.
+// Возвращает числовой ID контакта в Планфикс.
+async function findOrCreateContactId(amoUserId, amoUserName) {
+  let contact = await findContactByAmoUserId(amoUserId);
+  if (!contact) {
+    contact = await createContact(amoUserId, amoUserName);
+  }
+  return contact.id;
+}
+
+// -----------------------------------------------------------
+// Ищем среди задач ту, где данный контакт указан как
+// контрагент (Контрагент — встроенное поле, тип фильтра 7)
+// и задача ещё не завершена.
+// -----------------------------------------------------------
+async function findOpenTaskByContactId(contactId) {
   const body = {
     offset: 0,
     pageSize: 20,
     filters: [
       {
-        type: 101, // Пользовательское поле типа "Строка"
-        field: Number(CUSTOM_FIELD_ID),
+        type: 7, // Контрагент
         operator: 'equal',
-        value: String(amoUserId),
+        value: `contact:${contactId}`,
       },
     ],
     fields: 'id,name,status',
@@ -60,7 +126,6 @@ async function findOpenTaskByAmoUserId(amoUserId) {
 
   const res = await client.post('/task/list', body);
 
-  // ВРЕМЕННО (для отладки): смотрим, что реально нашёл Планфикс
   console.log('RAW ОТВЕТ Планфикс при поиске открытой задачи:', JSON.stringify(res.data, null, 2));
 
   const tasks = res.data.tasks || [];
@@ -68,23 +133,19 @@ async function findOpenTaskByAmoUserId(amoUserId) {
   return openTask || null;
 }
 
-// Создаём новую задачу
-async function createTask({ amoUserId, amoUserName, text }) {
+// -----------------------------------------------------------
+// Создаём новую задачу, привязанную к контакту как контрагенту
+// -----------------------------------------------------------
+async function createTask({ contactId, amoUserId, amoUserName, text }) {
   const body = {
     name: `Обращение из amoMessenger: ${amoUserName || amoUserId}`,
     description: text,
     project: PROJECT_ID ? { id: Number(PROJECT_ID) } : undefined,
-    customFieldData: [
-      {
-        field: { id: Number(CUSTOM_FIELD_ID) },
-        value: String(amoUserId),
-      },
-    ],
+    contact: { id: contactId },
   };
 
   const res = await client.post('/task/', body);
 
-  // ВРЕМЕННО (для отладки): смотрим, что реально вернул Планфикс
   console.log('RAW ОТВЕТ Планфикс при создании задачи:', JSON.stringify(res.data, null, 2));
 
   return res.data;
@@ -100,7 +161,8 @@ async function addComment(taskId, text) {
 }
 
 module.exports = {
-  findOpenTaskByAmoUserId,
+  findOrCreateContactId,
+  findOpenTaskByContactId,
   createTask,
   addComment,
 };
