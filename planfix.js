@@ -2,6 +2,7 @@
 //  МОДУЛЬ РАБОТЫ С ПЛАНФИКС
 //  REST API – для поиска/создания контактов, задач, полей
 //  Webchat API – для отправки сообщений с дополнительными данными
+//  Хранение amoUserId в поле email контакта
 // ============================================================
 
 const axios = require('axios');
@@ -11,7 +12,6 @@ const DOMAIN = process.env.PLANFIX_DOMAIN || 'planfix.com';
 const TOKEN = process.env.PLANFIX_TOKEN;                     // REST токен
 const WEBCHAT_TOKEN = process.env.PLANFIX_WEBCHAT_TOKEN;      // Ключ провайдера веб-чата
 const CONTACT_TEMPLATE_ID = process.env.PLANFIX_CONTACT_TEMPLATE_ID;
-const PROJECT_ID = process.env.PLANFIX_PROJECT_ID;
 const PROVIDER_ID = 'amomessenger';
 
 // REST клиент
@@ -39,38 +39,39 @@ function isClosedStatus(status) {
 }
 
 // -----------------------------------------------------------
-// ПОИСК КОНТАКТА ПО ИМЕНИ
+// ПОИСК КОНТАКТА ПО EMAIL (в котором хранится amoUserId)
 // -----------------------------------------------------------
-async function findContactByName(name) {
+async function findContactByAmoUserId(amoUserId) {
   const body = {
     offset: 0,
-    pageSize: 10,
+    pageSize: 1,
     filters: [
       {
-        type: 1,
+        type: 1001,              // фильтр по email
         operator: 'equal',
-        value: name,
+        value: String(amoUserId),
       },
     ],
-    fields: 'id,name',
+    fields: 'id,name,email',
   };
   const res = await restClient.post('/contact/list', body);
-  console.log('RAW ОТВЕТ Планфикс при поиске контакта по имени:', JSON.stringify(res.data, null, 2));
+  console.log('RAW ОТВЕТ Планфикс при поиске контакта по email:', JSON.stringify(res.data, null, 2));
   const contacts = res.data.contacts || [];
   return contacts.length ? contacts[0] : null;
 }
 
 // -----------------------------------------------------------
-// СОЗДАНИЕ НОВОГО КОНТАКТА (только имя)
+// СОЗДАНИЕ НОВОГО КОНТАКТА С EMAIL
 // -----------------------------------------------------------
-async function createContact(amoUserName) {
+async function createContact(amoUserId, amoUserName) {
   const body = {
     template: CONTACT_TEMPLATE_ID ? { id: Number(CONTACT_TEMPLATE_ID) } : undefined,
-    name: amoUserName || 'Пользователь amoMessenger',
+    name: amoUserName || `amoMessenger ${amoUserId}`,
+    email: String(amoUserId),   // сохраняем идентификатор в email
   };
   Object.keys(body).forEach(key => body[key] === undefined && delete body[key]);
 
-  console.log('📤 Создаём контакт:', JSON.stringify(body, null, 2));
+  console.log('📤 Создаём контакт с email:', JSON.stringify(body, null, 2));
 
   try {
     const res = await restClient.post('/contact/', body);
@@ -89,16 +90,45 @@ async function createContact(amoUserName) {
 }
 
 // -----------------------------------------------------------
-// НАЙТИ ИЛИ СОЗДАТЬ КОНТАКТ ПО ИМЕНИ
+// НАЙТИ ИЛИ СОЗДАТЬ КОНТАКТ ПО amoUserId
 // -----------------------------------------------------------
-async function findOrCreateContactId(amoUserName) {
-  let contact = await findContactByName(amoUserName);
+async function findOrCreateContactId(amoUserId, amoUserName) {
+  let contact = await findContactByAmoUserId(amoUserId);
   if (!contact) {
-    contact = await createContact(amoUserName);
+    contact = await createContact(amoUserId, amoUserName);
   } else {
-    console.log(`✅ Контакт найден: ID ${contact.id}, имя "${contact.name}"`);
+    // Если контакт найден, но имя отличается – обновляем
+    if (amoUserName && contact.name !== amoUserName) {
+      await updateContactName(contact.id, amoUserName);
+    }
+    // Если email не совпадает (редко) – обновляем
+    if (contact.email !== String(amoUserId)) {
+      await updateContactEmail(contact.id, String(amoUserId));
+    }
   }
   return contact.id;
+}
+
+// -----------------------------------------------------------
+// ОБНОВЛЕНИЕ ИМЕНИ КОНТАКТА
+// -----------------------------------------------------------
+async function updateContactName(contactId, newName) {
+  const body = { id: contactId, name: newName };
+  console.log(`🔄 Обновляем имя контакта ${contactId} на "${newName}"`);
+  const res = await restClient.post('/contact/', body);
+  console.log('RAW ОТВЕТ при обновлении имени:', JSON.stringify(res.data, null, 2));
+  return res.data;
+}
+
+// -----------------------------------------------------------
+// ОБНОВЛЕНИЕ EMAIL КОНТАКТА
+// -----------------------------------------------------------
+async function updateContactEmail(contactId, newEmail) {
+  const body = { id: contactId, email: newEmail };
+  console.log(`🔄 Обновляем email контакта ${contactId} на "${newEmail}"`);
+  const res = await restClient.post('/contact/', body);
+  console.log('RAW ОТВЕТ при обновлении email:', JSON.stringify(res.data, null, 2));
+  return res.data;
 }
 
 // -----------------------------------------------------------
