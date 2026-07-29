@@ -12,10 +12,6 @@ app.use(express.json());
 
 const SECRET = process.env.WEBHOOK_SECRET;
 
-// Простой кеш для предотвращения дублирования исходящих сообщений
-// (храним ID комментариев, которые уже были обработаны)
-const processedComments = new Set();
-
 function checkSecret(req, res, next) {
   if (req.query.secret !== SECRET) {
     return res.status(403).send('forbidden');
@@ -28,20 +24,13 @@ function checkSecret(req, res, next) {
 // -----------------------------------------------------------
 app.get('/oauth', async (req, res) => {
   const { code } = req.query;
-  if (!code) {
-    return res.status(400).send('Не пришёл параметр code');
-  }
-  console.log('Получен код авторизации:', code.slice(0, 10) + '...');
+  if (!code) return res.status(400).send('Не пришёл параметр code');
   try {
     const tokenData = await amo.exchangeCodeForToken(code);
     console.log('✅ Получен access_token:', tokenData.access_token);
     const context = await amo.validateToken(tokenData.access_token);
     console.log('Контекст:', context);
-    res.send(`
-      <h2>Приложение успешно подключено!</h2>
-      <p>Токен: <code>${tokenData.access_token}</code></p>
-      <p>Скопируйте его в переменную AMO_ACCESS_TOKEN на Render и перезапустите.</p>
-    `);
+    res.send(`<h2>Приложение подключено!</h2><p>Токен: <code>${tokenData.access_token}</code></p>`);
   } catch (err) {
     console.error('❌ Ошибка OAuth:', err);
     res.status(500).send('Ошибка получения токена, смотрите логи.');
@@ -49,7 +38,7 @@ app.get('/oauth', async (req, res) => {
 });
 
 // -----------------------------------------------------------
-// Вебхук от amoMessenger (входящие сообщения)
+// Вебхук от amoMessenger (входящие)
 // -----------------------------------------------------------
 app.post('/webhook/amomessenger', checkSecret, async (req, res) => {
   console.log('📩 Полный body от amoMessenger:', JSON.stringify(req.body, null, 2));
@@ -65,30 +54,24 @@ app.post('/webhook/amomessenger', checkSecret, async (req, res) => {
 
     console.log('Входящее сообщение от', userId, ':', messageText);
     if (attachments && attachments.length > 0) {
-      console.log('📎 Вложений:', attachments.length);
       attachments.forEach(a => console.log('  -', a.name, '=>', a.url));
     }
 
     if (!userId || (!messageText && (!attachments || attachments.length === 0))) {
-      console.log('Пустое сообщение без содержимого, игнорируем');
+      console.log('Пустое сообщение, игнорируем');
       return res.sendStatus(200);
     }
 
+    // Получаем реальное имя
     let realUserName = userName;
     if (!realUserName || realUserName.startsWith('Пользователь ') || realUserName === userId) {
-      console.log(`👤 Имя пользователя не получено из вебхука, запрашиваем через API...`);
       const nameFromApi = await amo.getUserInfo(userId);
-      if (nameFromApi) {
-        realUserName = nameFromApi;
-        console.log(`✅ Имя получено из API: ${realUserName}`);
-      } else {
-        realUserName = userId;
-        console.log(`⚠️ Не удалось получить имя, используем ID: ${realUserName}`);
-      }
+      realUserName = nameFromApi || userId;
+      console.log(`👤 Имя пользователя: ${realUserName}`);
     }
 
-    // Находим или создаём контакт по внешнему коду (amoUserId)
-    const contactId = await planfix.findOrCreateContactId(userId, realUserName);
+    // Находим или создаём контакт по имени
+    const contactId = await planfix.findOrCreateContactId(realUserName);
     console.log(`✅ Контакт ID: ${contactId}`);
 
     const openTask = await planfix.findOpenTaskByContactId(contactId);
@@ -115,48 +98,52 @@ app.post('/webhook/amomessenger', checkSecret, async (req, res) => {
 });
 
 // -----------------------------------------------------------
-// Вебхук от Planfix (ответы из задач → в amoMessenger)
+// Вебхук от Planfix (исходящие)
 // -----------------------------------------------------------
+// Хранилище для ID уже обработанных сообщений (для защиты от дублей)
+const processedMessages = new Set();
+
 app.post('/webhook/planfix', checkSecret, async (req, res) => {
   console.log('📩 Полный запрос от Планфикса:');
   console.log('  Headers:', req.headers);
   console.log('  Body:', JSON.stringify(req.body, null, 2));
 
   try {
-    // Генерируем уникальный ключ для этого комментария
+    // Проверка на дублирование: используем заголовок x-request-start или комбинацию taskId + commentText
     const taskId = req.headers['x-planfix-task'];
-    const commentId = req.body.commentId || req.body.id || req.body.comment_id;
-    const uniqueKey = `${taskId}_${commentId || Date.now()}`;
-
-    // Проверяем, не обрабатывали ли уже этот комментарий
-    if (processedComments.has(uniqueKey)) {
-      console.log(`⚠️ Дублирующий вебхук для ${uniqueKey}, игнорируем`);
+    const commentTextRaw = req.body.commentText || req.body.comment || req.body.text || req.body.message || req.body.description;
+    if (!commentTextRaw) {
+      console.warn('⚠️ Нет текста комментария');
       return res.sendStatus(200);
     }
 
-    // 1. Берём amoUserId из тела запроса
+    const messageKey = `${taskId}_${commentTextRaw.substring(0, 50)}`;
+    if (processedMessages.has(messageKey)) {
+      console.log(`⚠️ Дублирующее сообщение для задачи ${taskId}, пропускаем`);
+      return res.sendStatus(200);
+    }
+    processedMessages.add(messageKey);
+    // Очищаем хранилище, чтобы не росло бесконечно (оставляем только последние 1000)
+    if (processedMessages.size > 1000) {
+      const arr = Array.from(processedMessages);
+      processedMessages.clear();
+      arr.slice(-500).forEach(k => processedMessages.add(k));
+    }
+
+    // Извлекаем amoUserId
     let amoUserId = req.body.amoUserId || null;
-    let commentText = req.body.commentText || req.body.comment || req.body.text || req.body.message || req.body.description;
-
     if (!amoUserId) {
-      console.warn('⚠️ amoUserId не найден в теле запроса. Доступные поля:', Object.keys(req.body));
+      // Если в теле нет, пытаемся достать из задачи (но мы убрали эту функцию, так что просто игнорируем)
+      console.warn('⚠️ amoUserId не найден в теле. Доступные поля:', Object.keys(req.body));
       return res.sendStatus(200);
     }
 
-    if (!commentText) {
-      console.warn('⚠️ Не удалось извлечь текст комментария. Доступные поля:', Object.keys(req.body));
-      return res.sendStatus(200);
-    }
-
-    // Очищаем HTML-теги
-    const cleanText = commentText.replace(/<[^>]*>/g, '').trim();
+    // Очищаем HTML
+    const cleanText = commentTextRaw.replace(/<[^>]*>/g, '').trim();
     if (!cleanText) {
       console.warn('⚠️ После очистки HTML текст пуст');
       return res.sendStatus(200);
     }
-
-    // Отмечаем комментарий как обработанный
-    processedComments.add(uniqueKey);
 
     console.log(`📤 Отправляем сообщение пользователю ${amoUserId}: ${cleanText}`);
     await amo.sendMessage(amoUserId, cleanText);
@@ -169,7 +156,9 @@ app.post('/webhook/planfix', checkSecret, async (req, res) => {
   }
 });
 
-// Проверка работоспособности
+// -----------------------------------------------------------
+// Проверка
+// -----------------------------------------------------------
 app.get('/', (req, res) => {
   res.send('Интеграция работает 🚀');
 });
