@@ -62,52 +62,66 @@ async function findContactByAmoUserId(amoUserId) {
 }
 
 // -----------------------------------------------------------
-// СОЗДАНИЕ НОВОГО КОНТАКТА (с проверкой поля)
+// СОЗДАНИЕ НОВОГО КОНТАКТА (с обновлением поля после создания)
 // -----------------------------------------------------------
 async function createContact(amoUserId, amoUserName) {
-  const body = {
+  // Шаг 1: создаём контакт без кастомных полей
+  const createBody = {
     template: CONTACT_TEMPLATE_ID ? { id: Number(CONTACT_TEMPLATE_ID) } : undefined,
     name: amoUserName || `amoMessenger ${amoUserId}`,
+  };
+  Object.keys(createBody).forEach(key => createBody[key] === undefined && delete createBody[key]);
+
+  console.log('📤 Шаг 1: Создаём контакт:', JSON.stringify(createBody, null, 2));
+
+  let contactId;
+  try {
+    const createRes = await restClient.post('/contact/', createBody);
+    contactId = createRes.data.id;
+    console.log(`✅ Контакт создан, ID: ${contactId}`);
+  } catch (err) {
+    console.error('❌ Ошибка при создании контакта:', err.response?.data || err.message);
+    throw err;
+  }
+
+  // Шаг 2: обновляем контакт, добавляя кастомное поле
+  const updateBody = {
+    id: contactId,
     customFieldData: [
       {
-        field: { id: Number(CONTACT_FIELD_ID) },   // правильный формат
+        field: { id: Number(CONTACT_FIELD_ID) },
         value: String(amoUserId),
       },
     ],
   };
-  Object.keys(body).forEach(key => body[key] === undefined && delete body[key]);
 
-  console.log('📤 Отправляем запрос на создание контакта:', JSON.stringify(body, null, 2));
+  console.log('📤 Шаг 2: Обновляем контакт, добавляем поле:', JSON.stringify(updateBody, null, 2));
 
   try {
-    const res = await restClient.post('/contact/', body);
-    console.log('✅ Контакт создан, ID:', res.data.id);
+    await restClient.post('/contact/', updateBody);
+    console.log(`✅ Поле amoMessenger ID обновлено для контакта ${contactId}`);
+  } catch (err) {
+    console.error('❌ Ошибка при обновлении поля контакта:', err.response?.data || err.message);
+    throw err;
+  }
 
-    // Проверяем, заполнилось ли поле
-    const checkRes = await restClient.get(`/contact/${res.data.id}?fields=id,name,customFields`);
-    console.log('🔍 ПРОВЕРКА КОНТАКТА ПОСЛЕ СОЗДАНИЯ:');
+  // Проверяем, что поле заполнилось
+  try {
+    const checkRes = await restClient.get(`/contact/${contactId}?fields=id,name,customFields`);
+    console.log('🔍 ПРОВЕРКА КОНТАКТА ПОСЛЕ ОБНОВЛЕНИЯ:');
     console.log(JSON.stringify(checkRes.data, null, 2));
-
-    // Ищем в ответе наше поле
     const customFields = checkRes.data.customFields || [];
     const found = customFields.find(f => f.field?.id === Number(CONTACT_FIELD_ID));
     if (found) {
       console.log(`✅ Поле amoMessenger ID заполнено: ${found.value}`);
     } else {
-      console.warn(`⚠️ Поле с ID ${CONTACT_FIELD_ID} не найдено в контакте. Возможно, ID поля неверен.`);
+      console.warn(`⚠️ Поле с ID ${CONTACT_FIELD_ID} не найдено в контакте после обновления.`);
     }
-
-    return res.data;
   } catch (err) {
-    if (err.response) {
-      console.error('❌ Ошибка при создании контакта:');
-      console.error('  Статус:', err.response.status);
-      console.error('  Данные ответа:', JSON.stringify(err.response.data, null, 2));
-    } else {
-      console.error('❌ Ошибка:', err.message);
-    }
-    throw err;
+    console.warn('⚠️ Не удалось проверить контакт:', err.message);
   }
+
+  return { id: contactId };
 }
 // -----------------------------------------------------------
 // ОБНОВЛЕНИЕ ИМЕНИ КОНТАКТА (если изменилось)
