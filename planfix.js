@@ -101,12 +101,9 @@ async function updateContactName(contactId, newName) {
 async function findOrCreateContactId(amoUserId, amoUserName) {
   let contact = await findContactByAmoUserId(amoUserId);
   if (!contact) {
-    // Создаём новый контакт
     contact = await createContact(amoUserId, amoUserName);
   } else if (amoUserName && contact.name !== amoUserName) {
-    // Если контакт найден, но имя отличается – обновляем
     await updateContactName(contact.id, amoUserName);
-    // Обновляем локальный объект, чтобы вернуть актуальное имя
     contact.name = amoUserName;
   }
   return contact.id;
@@ -145,7 +142,6 @@ async function createTask({ contactId, amoUserId, amoUserName, text, attachments
   params.append('chatId', String(amoUserId));
   params.append('planfix_token', WEBCHAT_TOKEN);
   
-  // Если текст пустой, но есть вложения, добавляем описание файлов
   let messageText = text || '';
   if (!messageText && attachments && attachments.length > 0) {
     const names = attachments.map(a => a.name || 'file').join(', ');
@@ -157,7 +153,6 @@ async function createTask({ contactId, amoUserId, amoUserName, text, attachments
   params.append('contactName', amoUserName || `Пользователь ${amoUserId}`);
   params.append('title', `Обращение из amoMessenger: ${amoUserName || amoUserId}`);
 
-  // Добавляем вложения
   if (attachments && attachments.length > 0) {
     attachments.forEach(file => {
       if (file.name && file.url) {
