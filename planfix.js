@@ -39,7 +39,7 @@ function isClosedStatus(status) {
 }
 
 // -----------------------------------------------------------
-// ПОИСК КОНТАКТА ПО КОДУ (amoUserId)
+// ПОИСК КОНТАКТА ПО ВНЕШНЕМУ КОДУ (исправлено: type=1005)
 // -----------------------------------------------------------
 async function findContactByAmoUserId(amoUserId) {
   const body = {
@@ -47,7 +47,7 @@ async function findContactByAmoUserId(amoUserId) {
     pageSize: 1,
     filters: [
       {
-        type: 103,               // фильтр по коду (внешнему идентификатору)
+        type: 1005,              // правильный тип для внешнего кода
         operator: 'equal',
         value: String(amoUserId),
       },
