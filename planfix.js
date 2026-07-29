@@ -62,7 +62,7 @@ async function findContactByAmoUserId(amoUserId) {
 }
 
 // -----------------------------------------------------------
-// СОЗДАНИЕ НОВОГО КОНТАКТА
+// СОЗДАНИЕ НОВОГО КОНТАКТА (исправлено: fieldId вместо field)
 // -----------------------------------------------------------
 async function createContact(amoUserId, amoUserName) {
   const body = {
@@ -70,7 +70,7 @@ async function createContact(amoUserId, amoUserName) {
     name: amoUserName || `amoMessenger ${amoUserId}`,
     customFieldData: [
       {
-        field: { id: Number(CONTACT_FIELD_ID) },
+        fieldId: Number(CONTACT_FIELD_ID),   // <-- исправлено!
         value: String(amoUserId),
       },
     ],
