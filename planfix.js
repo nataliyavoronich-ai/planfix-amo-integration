@@ -62,7 +62,7 @@ async function findContactByAmoUserId(amoUserId) {
 }
 
 // -----------------------------------------------------------
-// СОЗДАНИЕ НОВОГО КОНТАКТА (с обновлением поля после создания)
+// СОЗДАНИЕ НОВОГО КОНТАКТА (с обновлением поля через fieldId)
 // -----------------------------------------------------------
 async function createContact(amoUserId, amoUserName) {
   // Шаг 1: создаём контакт без кастомных полей
@@ -84,18 +84,18 @@ async function createContact(amoUserId, amoUserName) {
     throw err;
   }
 
-  // Шаг 2: обновляем контакт, добавляя кастомное поле
+  // Шаг 2: обновляем контакт, добавляя кастомное поле (используем fieldId)
   const updateBody = {
     id: contactId,
     customFieldData: [
       {
-        field: { id: Number(CONTACT_FIELD_ID) },
+        fieldId: Number(CONTACT_FIELD_ID),   // <-- изменено с field: { id: ... } на fieldId
         value: String(amoUserId),
       },
     ],
   };
 
-  console.log('📤 Шаг 2: Обновляем контакт, добавляем поле:', JSON.stringify(updateBody, null, 2));
+  console.log('📤 Шаг 2: Обновляем контакт, добавляем поле (fieldId):', JSON.stringify(updateBody, null, 2));
 
   try {
     await restClient.post('/contact/', updateBody);
@@ -111,7 +111,7 @@ async function createContact(amoUserId, amoUserName) {
     console.log('🔍 ПРОВЕРКА КОНТАКТА ПОСЛЕ ОБНОВЛЕНИЯ:');
     console.log(JSON.stringify(checkRes.data, null, 2));
     const customFields = checkRes.data.customFields || [];
-    const found = customFields.find(f => f.field?.id === Number(CONTACT_FIELD_ID));
+    const found = customFields.find(f => f.field?.id === Number(CONTACT_FIELD_ID) || f.fieldId === Number(CONTACT_FIELD_ID));
     if (found) {
       console.log(`✅ Поле amoMessenger ID заполнено: ${found.value}`);
     } else {
