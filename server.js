@@ -80,6 +80,7 @@ app.post('/webhook/amomessenger', checkSecret, async (req, res) => {
       return res.sendStatus(200);
     }
 
+    // Получаем реальное имя пользователя (если не пришло в вебхуке)
     let realUserName = userName;
     if (!realUserName || realUserName.startsWith('Пользователь ') || realUserName === userId) {
       console.log(`👤 Имя пользователя не получено из вебхука, запрашиваем через API...`);
@@ -93,8 +94,9 @@ app.post('/webhook/amomessenger', checkSecret, async (req, res) => {
       }
     }
 
-    // Находим или создаём контакт по имени (без кастомных полей)
-    const contactId = await planfix.findOrCreateContactId(realUserName);
+    // Находим или создаём контакт по email (в котором хранится amoUserId)
+    // ВАЖНО: передаём userId как первый аргумент (для поиска по email)
+    const contactId = await planfix.findOrCreateContactId(userId, realUserName);
     console.log(`✅ Контакт ID: ${contactId}`);
 
     // Ищем открытую задачу по контакту
