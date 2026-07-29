@@ -20,6 +20,36 @@ function checkSecret(req, res, next) {
 }
 
 // -----------------------------------------------------------
+// Декодирование HTML-сущностей ( &nbsp; → пробел, &lt; → < и т.д. )
+// -----------------------------------------------------------
+function decodeHtmlEntities(text) {
+  if (!text) return '';
+  const entities = {
+    '&nbsp;': ' ',
+    '&lt;': '<',
+    '&gt;': '>',
+    '&amp;': '&',
+    '&quot;': '"',
+    '&#39;': "'",
+    '&laquo;': '«',
+    '&raquo;': '»',
+    '&mdash;': '—',
+    '&ndash;': '–',
+    // можно добавить другие
+  };
+  let result = text;
+  for (const [entity, char] of Object.entries(entities)) {
+    result = result.split(entity).join(char);
+  }
+  // Удаляем оставшиеся HTML-теги (на случай, если они есть)
+  result = result.replace(/<[^>]*>/g, '');
+  return result.trim();
+}
+
+// Хранилище для предотвращения дублирования исходящих сообщений
+const processedMessages = new Set();
+
+// -----------------------------------------------------------
 // OAuth callback
 // -----------------------------------------------------------
 app.get('/oauth', async (req, res) => {
@@ -38,7 +68,7 @@ app.get('/oauth', async (req, res) => {
 });
 
 // -----------------------------------------------------------
-// Вебхук от amoMessenger (входящие)
+// Вебхук от amoMessenger (входящие сообщения)
 // -----------------------------------------------------------
 app.post('/webhook/amomessenger', checkSecret, async (req, res) => {
   console.log('📩 Полный body от amoMessenger:', JSON.stringify(req.body, null, 2));
@@ -54,6 +84,7 @@ app.post('/webhook/amomessenger', checkSecret, async (req, res) => {
 
     console.log('Входящее сообщение от', userId, ':', messageText);
     if (attachments && attachments.length > 0) {
+      console.log('📎 Вложений:', attachments.length);
       attachments.forEach(a => console.log('  -', a.name, '=>', a.url));
     }
 
@@ -70,8 +101,8 @@ app.post('/webhook/amomessenger', checkSecret, async (req, res) => {
       console.log(`👤 Имя пользователя: ${realUserName}`);
     }
 
-    // Находим или создаём контакт по имени
-    const contactId = await planfix.findOrCreateContactId(realUserName);
+    // Находим или создаём контакт по code (amoUserId)
+    const contactId = await planfix.findOrCreateContactId(userId, realUserName);
     console.log(`✅ Контакт ID: ${contactId}`);
 
     const openTask = await planfix.findOpenTaskByContactId(contactId);
@@ -85,7 +116,7 @@ app.post('/webhook/amomessenger', checkSecret, async (req, res) => {
         amoUserId: userId,
         amoUserName: realUserName,
         text: messageText,
-        attachments,
+        attachments,   // передаём файлы
       });
       console.log('🆕 Создана новая задача:', JSON.stringify(newTask));
     }
@@ -98,18 +129,14 @@ app.post('/webhook/amomessenger', checkSecret, async (req, res) => {
 });
 
 // -----------------------------------------------------------
-// Вебхук от Planfix (исходящие)
+// Вебхук от Planfix (ответы из задач → в amoMessenger)
 // -----------------------------------------------------------
-// Хранилище для ID уже обработанных сообщений (для защиты от дублей)
-const processedMessages = new Set();
-
 app.post('/webhook/planfix', checkSecret, async (req, res) => {
   console.log('📩 Полный запрос от Планфикса:');
   console.log('  Headers:', req.headers);
   console.log('  Body:', JSON.stringify(req.body, null, 2));
 
   try {
-    // Проверка на дублирование: используем заголовок x-request-start или комбинацию taskId + commentText
     const taskId = req.headers['x-planfix-task'];
     const commentTextRaw = req.body.commentText || req.body.comment || req.body.text || req.body.message || req.body.description;
     if (!commentTextRaw) {
@@ -117,31 +144,30 @@ app.post('/webhook/planfix', checkSecret, async (req, res) => {
       return res.sendStatus(200);
     }
 
+    // Проверка на дублирование (по задаче и части текста)
     const messageKey = `${taskId}_${commentTextRaw.substring(0, 50)}`;
     if (processedMessages.has(messageKey)) {
       console.log(`⚠️ Дублирующее сообщение для задачи ${taskId}, пропускаем`);
       return res.sendStatus(200);
     }
     processedMessages.add(messageKey);
-    // Очищаем хранилище, чтобы не росло бесконечно (оставляем только последние 1000)
     if (processedMessages.size > 1000) {
       const arr = Array.from(processedMessages);
       processedMessages.clear();
       arr.slice(-500).forEach(k => processedMessages.add(k));
     }
 
-    // Извлекаем amoUserId
+    // Получаем amoUserId
     let amoUserId = req.body.amoUserId || null;
     if (!amoUserId) {
-      // Если в теле нет, пытаемся достать из задачи (но мы убрали эту функцию, так что просто игнорируем)
       console.warn('⚠️ amoUserId не найден в теле. Доступные поля:', Object.keys(req.body));
       return res.sendStatus(200);
     }
 
-    // Очищаем HTML
-    const cleanText = commentTextRaw.replace(/<[^>]*>/g, '').trim();
+    // Декодируем HTML-сущности и удаляем теги
+    const cleanText = decodeHtmlEntities(commentTextRaw);
     if (!cleanText) {
-      console.warn('⚠️ После очистки HTML текст пуст');
+      console.warn('⚠️ После очистки текст пуст');
       return res.sendStatus(200);
     }
 
@@ -156,9 +182,7 @@ app.post('/webhook/planfix', checkSecret, async (req, res) => {
   }
 });
 
-// -----------------------------------------------------------
 // Проверка
-// -----------------------------------------------------------
 app.get('/', (req, res) => {
   res.send('Интеграция работает 🚀');
 });
