@@ -72,7 +72,7 @@ app.post('/webhook/amomessenger', checkSecret, async (req, res) => {
 
     // --- ПОЛУЧАЕМ РЕАЛЬНОЕ ИМЯ ПОЛЬЗОВАТЕЛЯ ---
     let realUserName = userName;
-    // Если имя не пришло в вебхуке или равно "Пользователь ...", запрашиваем через API
+    // Если имя не пришло в вебхуке или равно запасному, запрашиваем через API
     if (!realUserName || realUserName.startsWith('Пользователь ') || realUserName === userId) {
       console.log(`👤 Имя пользователя не получено из вебхука, запрашиваем через API...`);
       const nameFromApi = await amo.getUserInfo(userId);
@@ -80,7 +80,7 @@ app.post('/webhook/amomessenger', checkSecret, async (req, res) => {
         realUserName = nameFromApi;
         console.log(`✅ Имя получено из API: ${realUserName}`);
       } else {
-        // Если API не вернул имя, оставляем запасной вариант
+        // Если API не вернул имя, используем ID как запасной вариант
         realUserName = userId;
         console.log(`⚠️ Не удалось получить имя, используем ID: ${realUserName}`);
       }
