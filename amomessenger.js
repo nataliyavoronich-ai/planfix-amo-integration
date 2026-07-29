@@ -107,7 +107,7 @@ async function getUserInfo(userUuid) {
 }
 
 // -----------------------------------------------------------
-// Разбор входящего сообщения от amoMessenger (с поддержкой всех типов вложений)
+// Разбор входящего сообщения от amoMessenger (все типы вложений)
 // -----------------------------------------------------------
 function parseIncomingMessage(body) {
   const message = body?._embedded?.message;
@@ -123,7 +123,6 @@ function parseIncomingMessage(body) {
       if (file.type && file[file.type]) {
         const sub = file[file.type];
         const link = sub.link || sub.url || '';
-        // Имя: если есть filename – используем его, иначе генерируем из типа
         const name = sub.filename || sub.name || `${file.type}.file`;
         if (link) {
           attachments.push({ name, url: link });
@@ -137,7 +136,6 @@ function parseIncomingMessage(body) {
           if (obj.filename && obj.link) return { name: obj.filename, url: obj.link };
           if (obj.name && obj.url) return { name: obj.name, url: obj.url };
           if (obj.link && !obj.filename) {
-            // Если есть только link, генерируем имя
             const ext = obj.link.split('.').pop().split('?')[0] || 'file';
             return { name: `file.${ext}`, url: obj.link };
           }
@@ -158,7 +156,6 @@ function parseIncomingMessage(body) {
         if (info) {
           attachments.push(info);
         } else {
-          // Если ничего не найдено, добавляем с заглушкой
           const directName = file.name || file.filename || 'file';
           const directUrl = file.url || file.link || '';
           if (directUrl) {
