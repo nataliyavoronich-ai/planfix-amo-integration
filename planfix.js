@@ -62,7 +62,7 @@ async function findContactByAmoUserId(amoUserId) {
 }
 
 // -----------------------------------------------------------
-// СОЗДАНИЕ НОВОГО КОНТАКТА (с fieldId и дополнительным логированием)
+// СОЗДАНИЕ НОВОГО КОНТАКТА (с проверкой поля)
 // -----------------------------------------------------------
 async function createContact(amoUserId, amoUserName) {
   const body = {
@@ -70,7 +70,7 @@ async function createContact(amoUserId, amoUserName) {
     name: amoUserName || `amoMessenger ${amoUserId}`,
     customFieldData: [
       {
-        fieldId: Number(CONTACT_FIELD_ID),   // <-- ЗДЕСЬ ИЗМЕНЕНИЕ
+        field: { id: Number(CONTACT_FIELD_ID) },   // правильный формат
         value: String(amoUserId),
       },
     ],
@@ -81,11 +81,21 @@ async function createContact(amoUserId, amoUserName) {
 
   try {
     const res = await restClient.post('/contact/', body);
-    console.log('RAW ОТВЕТ Планфикс при создании контакта:', JSON.stringify(res.data, null, 2));
+    console.log('✅ Контакт создан, ID:', res.data.id);
 
-    // ДОПОЛНИТЕЛЬНАЯ ПРОВЕРКА: получаем созданный контакт со всеми полями
+    // Проверяем, заполнилось ли поле
     const checkRes = await restClient.get(`/contact/${res.data.id}?fields=id,name,customFields`);
-    console.log('🔍 ПРОВЕРКА КОНТАКТА ПОСЛЕ СОЗДАНИЯ:', JSON.stringify(checkRes.data, null, 2));
+    console.log('🔍 ПРОВЕРКА КОНТАКТА ПОСЛЕ СОЗДАНИЯ:');
+    console.log(JSON.stringify(checkRes.data, null, 2));
+
+    // Ищем в ответе наше поле
+    const customFields = checkRes.data.customFields || [];
+    const found = customFields.find(f => f.field?.id === Number(CONTACT_FIELD_ID));
+    if (found) {
+      console.log(`✅ Поле amoMessenger ID заполнено: ${found.value}`);
+    } else {
+      console.warn(`⚠️ Поле с ID ${CONTACT_FIELD_ID} не найдено в контакте. Возможно, ID поля неверен.`);
+    }
 
     return res.data;
   } catch (err) {
