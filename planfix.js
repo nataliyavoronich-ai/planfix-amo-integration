@@ -144,11 +144,20 @@ async function createTask({ contactId, amoUserId, amoUserName, text, attachments
   params.append('providerId', PROVIDER_ID);
   params.append('chatId', String(amoUserId));
   params.append('planfix_token', WEBCHAT_TOKEN);
-  params.append('message', text);
+  
+  // Если текст пустой, но есть вложения, добавляем описание файлов
+  let messageText = text || '';
+  if (!messageText && attachments && attachments.length > 0) {
+    const names = attachments.map(a => a.name || 'file').join(', ');
+    messageText = `📎 Вложения: ${names}`;
+  }
+  params.append('message', messageText || 'Сообщение без текста');
+  
   params.append('contactId', String(contactId));
   params.append('contactName', amoUserName || `Пользователь ${amoUserId}`);
   params.append('title', `Обращение из amoMessenger: ${amoUserName || amoUserId}`);
 
+  // Добавляем вложения
   if (attachments && attachments.length > 0) {
     attachments.forEach(file => {
       if (file.name && file.url) {
@@ -181,6 +190,7 @@ async function createTask({ contactId, amoUserId, amoUserName, text, attachments
     throw err;
   }
 }
+
 // -----------------------------------------------------------
 // ДОБАВЛЕНИЕ КОММЕНТАРИЯ
 // -----------------------------------------------------------
