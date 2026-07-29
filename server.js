@@ -10,9 +10,7 @@ const amo = require('./amomessenger');
 const app = express();
 
 // --- ПАРСИНГ ТЕЛА ЗАПРОСА ---
-// Для JSON
 app.use(express.json());
-// Для form-urlencoded (чтобы парсить вложения)
 app.use(express.urlencoded({ extended: true }));
 
 const SECRET = process.env.WEBHOOK_SECRET;
@@ -25,7 +23,7 @@ function checkSecret(req, res, next) {
 }
 
 // -----------------------------------------------------------
-// Декодирование HTML-сущностей ( &nbsp; → пробел, &lt; → < и т.д.)
+// Декодирование HTML-сущностей
 // -----------------------------------------------------------
 function decodeHtmlEntities(text) {
   if (!text) return '';
@@ -49,7 +47,7 @@ function decodeHtmlEntities(text) {
   return result.trim();
 }
 
-// Хранилище для предотвращения дублирования исходящих сообщений
+// Хранилище для предотвращения дублирования
 const processedMessages = new Set();
 
 // -----------------------------------------------------------
@@ -71,7 +69,7 @@ app.get('/oauth', async (req, res) => {
 });
 
 // -----------------------------------------------------------
-// Вебхук от amoMessenger (входящие сообщения)
+// Вебхук от amoMessenger (входящие)
 // -----------------------------------------------------------
 app.post('/webhook/amomessenger', checkSecret, async (req, res) => {
   console.log('📩 Полный body от amoMessenger:', JSON.stringify(req.body, null, 2));
@@ -132,7 +130,7 @@ app.post('/webhook/amomessenger', checkSecret, async (req, res) => {
 });
 
 // -----------------------------------------------------------
-// Вебхук от Planfix (ответы из задач → в amoMessenger)
+// Вебхук от Planfix (исходящие сообщения и уведомления)
 // -----------------------------------------------------------
 app.post('/webhook/planfix', checkSecret, async (req, res) => {
   console.log('📩 Полный запрос от Планфикса:');
@@ -141,44 +139,21 @@ app.post('/webhook/planfix', checkSecret, async (req, res) => {
 
   try {
     const taskId = req.headers['x-planfix-task'];
-    let amoUserId = req.body.amoUserId || null;
-    let commentText = req.body.commentText || req.body.comment || req.body.text || req.body.message || req.body.description || '';
-
-    // --- ИЗВЛЕКАЕМ ВЛОЖЕНИЯ ---
+    let amoUserId = null;
+    let commentText = '';
     let attachments = [];
 
-    // 1. Если attachments пришли как массив
-    if (req.body.attachments && Array.isArray(req.body.attachments)) {
-      attachments = req.body.attachments;
+    // --- ОПРЕДЕЛЯЕМ amoUserId ---
+    // Если есть поле amoUserId – берём его
+    if (req.body.amoUserId) {
+      amoUserId = req.body.amoUserId;
     }
-    // 2. Если attachments пришли как объект с индексами (из form-urlencoded)
-    else if (req.body.attachments && typeof req.body.attachments === 'object') {
-      const keys = Object.keys(req.body.attachments).filter(k => !isNaN(k));
-      attachments = keys.map(k => req.body.attachments[k]);
-    }
-
-    // 3. Если вложения переданы как параметры attachments[0][name], attachments[0][url] (это уже распарсится как объект)
-    // Но могут быть и плоские параметры: attachments[0][name] → ключи в req.body
-    const attachmentNames = {};
-    const attachmentUrls = {};
-    for (const key of Object.keys(req.body)) {
-      const nameMatch = key.match(/^attachments\[(\d+)\]\[name\]$/);
-      const urlMatch = key.match(/^attachments\[(\d+)\]\[url\]$/);
-      if (nameMatch) {
-        attachmentNames[nameMatch[1]] = req.body[key];
-      }
-      if (urlMatch) {
-        attachmentUrls[urlMatch[1]] = req.body[key];
-      }
-    }
-    const indices = new Set([...Object.keys(attachmentNames), ...Object.keys(attachmentUrls)]);
-    for (const idx of indices) {
-      if (attachmentNames[idx] && attachmentUrls[idx]) {
-        attachments.push({ name: attachmentNames[idx], url: attachmentUrls[idx] });
-      }
+    // Если есть chatId (приходит в form-urlencoded) – используем его
+    else if (req.body.chatId) {
+      amoUserId = req.body.chatId;
     }
 
-    // Если нет amoUserId – пытаемся получить из задачи
+    // Если всё ещё нет – пробуем получить из задачи по taskId
     if (!amoUserId && taskId) {
       console.log(`🔍 Получаем amoUserId для задачи ${taskId} через API...`);
       amoUserId = await planfix.getAmoUserIdFromTask(taskId);
@@ -187,6 +162,27 @@ app.post('/webhook/planfix', checkSecret, async (req, res) => {
     if (!amoUserId) {
       console.warn('⚠️ amoUserId не найден, пропускаем');
       return res.sendStatus(200);
+    }
+
+    // --- ИЗВЛЕКАЕМ ТЕКСТ ---
+    // Из полей commentText, comment, text, message, description
+    commentText = req.body.commentText || req.body.comment || req.body.text || req.body.message || req.body.description || '';
+
+    // --- ИЗВЛЕКАЕМ ВЛОЖЕНИЯ ---
+    // 1. Если attachments пришли как массив
+    if (req.body.attachments && Array.isArray(req.body.attachments)) {
+      attachments = req.body.attachments;
+    }
+    // 2. Если attachments пришли как объект (например, { url: '...', name: '...' })
+    else if (req.body.attachments && typeof req.body.attachments === 'object') {
+      // Если это объект с полями url и name – добавляем как одно вложение
+      if (req.body.attachments.url && req.body.attachments.name) {
+        attachments.push({ name: req.body.attachments.name, url: req.body.attachments.url });
+      } else {
+        // Иначе это объект с индексами (если много вложений)
+        const keys = Object.keys(req.body.attachments).filter(k => !isNaN(k));
+        attachments = keys.map(k => req.body.attachments[k]);
+      }
     }
 
     // Если нет ни текста, ни вложений – пропускаем
