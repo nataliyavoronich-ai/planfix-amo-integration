@@ -39,7 +39,7 @@ function isClosedStatus(status) {
 }
 
 // -----------------------------------------------------------
-// ПОИСК КОНТАКТА ПО ТЕЛЕФОНУ (в котором хранится amoUserId)
+// ПОИСК КОНТАКТА ПО ТЕЛЕФОНУ (фильтр по строке)
 // -----------------------------------------------------------
 async function findContactByAmoUserId(amoUserId) {
   const body = {
@@ -49,7 +49,7 @@ async function findContactByAmoUserId(amoUserId) {
       {
         type: 3,                 // фильтр по телефону
         operator: 'equal',
-        value: String(amoUserId),
+        value: String(amoUserId), // строка для поиска
       },
     ],
     fields: 'id,name,phone',
@@ -61,17 +61,17 @@ async function findContactByAmoUserId(amoUserId) {
 }
 
 // -----------------------------------------------------------
-// СОЗДАНИЕ НОВОГО КОНТАКТА С ТЕЛЕФОНОМ
+// СОЗДАНИЕ НОВОГО КОНТАКТА С ТЕЛЕФОНОМ (объект)
 // -----------------------------------------------------------
 async function createContact(amoUserId, amoUserName) {
   const body = {
     template: CONTACT_TEMPLATE_ID ? { id: Number(CONTACT_TEMPLATE_ID) } : undefined,
     name: amoUserName || `amoMessenger ${amoUserId}`,
-    phone: String(amoUserId),   // сохраняем идентификатор в телефон
+    phone: { number: String(amoUserId) },   // передаём объект!
   };
   Object.keys(body).forEach(key => body[key] === undefined && delete body[key]);
 
-  console.log('📤 Создаём контакт с телефоном:', JSON.stringify(body, null, 2));
+  console.log('📤 Создаём контакт с телефоном (объект):', JSON.stringify(body, null, 2));
 
   try {
     const res = await restClient.post('/contact/', body);
@@ -88,7 +88,6 @@ async function createContact(amoUserId, amoUserName) {
     throw err;
   }
 }
-
 // -----------------------------------------------------------
 // ОБНОВЛЕНИЕ ИМЕНИ И ТЕЛЕФОНА (если изменились)
 // -----------------------------------------------------------
