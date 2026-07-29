@@ -4,8 +4,6 @@
 
 const axios = require('axios');
 const FormData = require('form-data');
-const fs = require('fs');
-const path = require('path');
 
 const ACCESS_TOKEN = process.env.AMO_ACCESS_TOKEN;
 const API_BASE_URL = process.env.AMO_API_BASE_URL || 'https://api.amo.io/v1.3';
@@ -137,7 +135,8 @@ async function uploadFileToAmo(fileStream, fileName) {
       },
     });
     console.log('✅ Файл загружен в amoMessenger:', res.data);
-    return res.data; // ожидаем { id: '...' } или { attachment_id: '...' }
+    // В ответе приходит file_id (или id/attachment_id)
+    return res.data.file_id || res.data.id || res.data.attachment_id;
   } catch (err) {
     console.error('❌ Ошибка загрузки файла в amoMessenger:', err.response?.data || err.message);
     throw err;
@@ -153,10 +152,8 @@ async function sendMessageWithFile(userId, text, fileUrl, fileName) {
     const fileStream = await downloadFile(fileUrl);
 
     // 2. Загружаем в amoMessenger
-    const uploadResult = await uploadFileToAmo(fileStream, fileName);
-    const attachmentId = uploadResult.id || uploadResult.attachment_id;
-
-    if (!attachmentId) {
+    const fileId = await uploadFileToAmo(fileStream, fileName);
+    if (!fileId) {
       throw new Error('Не удалось получить ID загруженного файла');
     }
 
@@ -164,7 +161,7 @@ async function sendMessageWithFile(userId, text, fileUrl, fileName) {
     const url = `${API_BASE_URL}/direct/${userId}/sendMessage`;
     const payload = {
       text: text || '',
-      attachments: [{ id: attachmentId }],
+      files: [fileId],   // Используем поле files для вложений
     };
     const res = await axios.post(url, payload, {
       headers: { Authorization: `Bearer ${ACCESS_TOKEN}` },
@@ -173,7 +170,7 @@ async function sendMessageWithFile(userId, text, fileUrl, fileName) {
     return res.data;
   } catch (err) {
     console.error('❌ Ошибка отправки сообщения с файлом:', err.message);
-    // Если не удалось отправить с файлом – пробуем отправить только текст
+    // Если не удалось отправить с файлом – пробуем только текст
     if (text) {
       console.log('📤 Отправляем только текст как fallback');
       await sendMessage(userId, text);
@@ -190,7 +187,7 @@ async function sendMessageWithAttachments(userId, text, attachments = []) {
     return sendMessage(userId, text);
   }
 
-  // Если есть несколько вложений – пока обрабатываем только первое
+  // Обрабатываем только первое вложение (для простоты)
   const first = attachments[0];
   if (first && first.url) {
     const fileName = first.name || 'file';
