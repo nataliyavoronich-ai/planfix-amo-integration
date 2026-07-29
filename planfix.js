@@ -138,7 +138,7 @@ async function findOpenTaskByContactId(contactId) {
 // -----------------------------------------------------------
 // ОТПРАВКА СООБЩЕНИЯ В ПЛАНФИКС (Webchat API)
 // -----------------------------------------------------------
-async function createTask({ contactId, amoUserId, amoUserName, text }) {
+async function createTask({ contactId, amoUserId, amoUserName, text, attachments = [] }) {
   const params = new URLSearchParams();
   params.append('cmd', 'newMessage');
   params.append('providerId', PROVIDER_ID);
@@ -148,6 +148,15 @@ async function createTask({ contactId, amoUserId, amoUserName, text }) {
   params.append('contactId', String(contactId));
   params.append('contactName', amoUserName || `Пользователь ${amoUserId}`);
   params.append('title', `Обращение из amoMessenger: ${amoUserName || amoUserId}`);
+
+  if (attachments && attachments.length > 0) {
+    attachments.forEach(file => {
+      if (file.name && file.url) {
+        params.append('attachments[name]', file.name);
+        params.append('attachments[url]', file.url);
+      }
+    });
+  }
 
   const url = `https://${ACCOUNT}.${DOMAIN}/webchat/api`;
   console.log('📤 Отправляем запрос в Планфикс (webchat/api):');
@@ -172,7 +181,6 @@ async function createTask({ contactId, amoUserId, amoUserName, text }) {
     throw err;
   }
 }
-
 // -----------------------------------------------------------
 // ДОБАВЛЕНИЕ КОММЕНТАРИЯ
 // -----------------------------------------------------------
