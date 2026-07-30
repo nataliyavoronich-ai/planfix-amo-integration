@@ -22,7 +22,10 @@ const UPSTASH_TOKEN = process.env.UPSTASH_REDIS_REST_TOKEN;
 const UPSTASH_KEY = 'amo_refresh_token';
 
 async function saveRefreshTokenToUpstash(token) {
-  if (!UPSTASH_URL || !UPSTASH_TOKEN) return;
+  if (!UPSTASH_URL || !UPSTASH_TOKEN) {
+    console.log('ℹ️ Upstash не настроен, пропускаем сохранение');
+    return;
+  }
   try {
     await axios.get(`${UPSTASH_URL}/set/${UPSTASH_KEY}/${encodeURIComponent(token)}`, {
       headers: { Authorization: `Bearer ${UPSTASH_TOKEN}` },
@@ -34,12 +37,21 @@ async function saveRefreshTokenToUpstash(token) {
 }
 
 async function loadRefreshTokenFromUpstash() {
-  if (!UPSTASH_URL || !UPSTASH_TOKEN) return null;
+  if (!UPSTASH_URL || !UPSTASH_TOKEN) {
+    console.log('ℹ️ Upstash не настроен, используем переменную окружения');
+    return null;
+  }
   try {
     const res = await axios.get(`${UPSTASH_URL}/get/${UPSTASH_KEY}`, {
       headers: { Authorization: `Bearer ${UPSTASH_TOKEN}` },
     });
-    return res.data?.result || null;
+    const token = res.data?.result || null;
+    if (token) {
+      console.log('📥 refresh_token загружен из Upstash');
+    } else {
+      console.log('ℹ️ В Upstash нет сохранённого refresh_token');
+    }
+    return token;
   } catch (err) {
     console.error('❌ Не удалось прочитать refresh_token из Upstash:', err.response?.data || err.message);
     return null;
@@ -59,8 +71,7 @@ function getAccessToken() {
   return currentAccessToken;
 }
 
-// Обновляет access_token через refresh_token. Вызывается сама
-// по расписанию, а также один раз сразу при запуске сервера.
+// Обновляет access_token через refresh_token.
 async function refreshAccessToken() {
   if (!currentRefreshToken) {
     console.warn('⚠️ Нет refresh_token — автообновление невозможно, используется текущий AMO_ACCESS_TOKEN как есть');
@@ -71,9 +82,6 @@ async function refreshAccessToken() {
     return;
   }
 
-  // ДИАГНОСТИКА: показываем начало/конец и длину токена, который
-  // реально используется — так можно сверить с тем, что в Render,
-  // и увидеть, не обрезался ли он при копировании.
   console.log(
     `🔍 Пробуем обновить токен. refresh_token: длина=${currentRefreshToken.length}, ` +
     `начало="${currentRefreshToken.slice(0, 12)}", конец="${currentRefreshToken.slice(-12)}"`
@@ -95,6 +103,8 @@ async function refreshAccessToken() {
     // refresh_token тоже обычно обновляется новым значением
     if (res.data.refresh_token) {
       currentRefreshToken = res.data.refresh_token;
+      // ✅ Сохраняем новый refresh_token в Upstash
+      await saveRefreshTokenToUpstash(currentRefreshToken);
     }
     console.log('🔄 Токен amoMessenger автоматически обновлён, действителен ещё', res.data.expires_in, 'секунд');
   } catch (err) {
@@ -102,13 +112,25 @@ async function refreshAccessToken() {
   }
 }
 
-// Запускаем: сразу при старте сервера (на случай, если сохранённый
-// AMO_ACCESS_TOKEN уже устарел) и затем каждые 12 часов.
-function startTokenAutoRefresh() {
-  if (currentRefreshToken) {
-    refreshAccessToken();
+// Запускаем: сразу при старте сервера загружаем свежий refresh_token
+// из Upstash, обновляем access_token (если нужно) и затем каждые 12 часов.
+async function startTokenAutoRefresh() {
+  // 1. Загружаем из Upstash (если там есть)
+  const savedRefreshToken = await loadRefreshTokenFromUpstash();
+  if (savedRefreshToken) {
+    currentRefreshToken = savedRefreshToken;
+    console.log('✅ Используем refresh_token из Upstash');
+  } else {
+    console.log('ℹ️ Используем refresh_token из переменной окружения (или отсутствует)');
   }
-  setInterval(refreshAccessToken, 12 * 60 * 60 * 1000); // каждые 12 часов
+
+  // 2. Если есть refresh_token – сразу обновляем access_token
+  if (currentRefreshToken) {
+    await refreshAccessToken();
+  }
+
+  // 3. Запускаем периодическое обновление (каждые 12 часов)
+  setInterval(refreshAccessToken, 12 * 60 * 60 * 1000);
 }
 
 // -----------------------------------------------------------
@@ -132,10 +154,10 @@ async function exchangeCodeForToken(code) {
       params,
       { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } }
     );
-    // Запоминаем оба токена в памяти сразу же — дальше сервер
-    // сам будет обновлять access_token по расписанию.
     currentAccessToken = res.data.access_token;
     currentRefreshToken = res.data.refresh_token;
+    // ✅ Сохраняем полученный refresh_token в Upstash
+    await saveRefreshTokenToUpstash(currentRefreshToken);
     return res.data;
   } catch (err) {
     console.error('❌ Ошибка обмена кода на токен:', err.response?.data || err.message);
@@ -228,9 +250,6 @@ async function uploadFileToAmo(fileStream, fileName) {
   const form = new FormData();
   form.append('file', fileStream, { filename: fileName });
 
-  // ВАЖНО: у этого конкретного метода отдельный домен — api.amo.tm,
-  // а не api.amo.io, который используется для sendMessage и остального.
-  // Подтверждено официальной документацией amoMessenger.
   const url = 'https://api.amo.tm/v1.3/files/upload';
   try {
     const res = await axios.post(url, form, {
@@ -256,7 +275,6 @@ async function sendMessageWithAttachments(userId, text, attachments = []) {
   }
 
   try {
-    // Загружаем КАЖДЫЙ файл по очереди (а не только первый)
     const fileIds = [];
     for (const file of attachments) {
       if (!file || !file.url) continue;
@@ -267,7 +285,6 @@ async function sendMessageWithAttachments(userId, text, attachments = []) {
     }
 
     if (fileIds.length === 0) {
-      // Ни один файл не загрузился — отправляем хотя бы текст
       return sendMessage(userId, text);
     }
 
