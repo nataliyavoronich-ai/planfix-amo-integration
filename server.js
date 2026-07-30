@@ -51,12 +51,14 @@ app.get('/oauth', async (req, res) => {
   try {
     const tokenData = await amo.exchangeCodeForToken(code);
     console.log('✅ Получен access_token:', tokenData.access_token);
+    console.log('✅ Получен refresh_token:', tokenData.refresh_token);
     const context = await amo.validateToken(tokenData.access_token);
     console.log('Контекст:', context);
     res.send(`
       <h2>Приложение подключено!</h2>
       <p>Токен: <code>${tokenData.access_token}</code></p>
-      <p>Скопируйте его и вставьте в переменную окружения <strong>AMO_ACCESS_TOKEN</strong> на Render, затем перезапустите сервис.</p>
+      <p>Refresh-токен: <code>${tokenData.refresh_token}</code></p>
+      <p>Вставьте оба значения в переменные окружения <strong>AMO_ACCESS_TOKEN</strong> и <strong>AMO_REFRESH_TOKEN</strong> на Render (это нужно один раз — дальше сервер будет обновлять токен сам).</p>
     `);
   } catch (err) {
     console.error('❌ Ошибка OAuth:', err);
@@ -175,4 +177,5 @@ app.get('/', (req, res) => {
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log('✅ Сервер запущен на порту ' + PORT);
+  amo.startTokenAutoRefresh();
 });
