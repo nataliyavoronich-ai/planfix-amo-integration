@@ -1,26 +1,27 @@
 // ============================================================
 //  МОДУЛЬ РАБОТЫ С amoMessenger
+//  Основано на официальном туториале и примерах кода
+//  (webhook.php, amo_authorization.php) с портала разработчика.
 // ============================================================
 
 const axios = require('axios');
-const FormData = require('form-data');
 
-const ACCESS_TOKEN = process.env.AMO_ACCESS_TOKEN;
-const API_BASE_URL = process.env.AMO_API_BASE_URL || 'https://api.amo.io/v1.3';
+const ACCESS_TOKEN = process.env.AMO_ACCESS_TOKEN; // токен вашего приложения-бота
+const API_BASE_URL = process.env.AMO_API_BASE_URL; // адрес API для методов вроде sendMessage
 const CLIENT_ID = process.env.AMO_CLIENT_ID;
 const CLIENT_SECRET = process.env.AMO_CLIENT_SECRET;
-const REDIRECT_URI = process.env.AMO_REDIRECT_URI;
+const REDIRECT_URI = process.env.AMO_REDIRECT_URI; // тот же адрес /oauth, что указан в кабинете разработчика
 
+// Сервер авторизации amoMessenger — ОТДЕЛЬНЫЙ домен, не путать
+// с API_BASE_URL, который используется для отправки сообщений
 const OAUTH_BASE_URL = 'https://id.amo.tm';
 
 // -----------------------------------------------------------
-// Обмен временного кода на постоянный access_token
+// Обмен временного кода (?code=...) на постоянный access_token
 // -----------------------------------------------------------
+// Взято из официального туториала amoMessenger. Токен запрашивается
+// как обычная веб-форма (не JSON!), поэтому используем querystring.
 async function exchangeCodeForToken(code) {
-  if (!CLIENT_ID || !CLIENT_SECRET || !REDIRECT_URI) {
-    throw new Error('Отсутствуют переменные окружения: CLIENT_ID, CLIENT_SECRET или REDIRECT_URI');
-  }
-
   const params = new URLSearchParams();
   params.append('grant_type', 'authorization_code');
   params.append('client_id', CLIENT_ID);
@@ -28,184 +29,87 @@ async function exchangeCodeForToken(code) {
   params.append('redirect_uri', REDIRECT_URI);
   params.append('code', code);
 
-  try {
-    const res = await axios.post(
-      `${OAUTH_BASE_URL}/oauth2/access_token`,
-      params,
-      { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } }
-    );
-    return res.data;
-  } catch (err) {
-    console.error('❌ Ошибка обмена кода на токен:', err.response?.data || err.message);
-    throw err;
-  }
+  const res = await axios.post(
+    `${OAUTH_BASE_URL}/oauth2/access_token`,
+    params,
+    { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } }
+  );
+
+  return res.data; // { access_token, refresh_token, expires_in, ... }
 }
 
 // -----------------------------------------------------------
-// Проверка контекста токена
+// Узнаём "контекст" токена: от имени какого пользователя/компании
+// он выдан. Полезно, чтобы понимать, кто установил приложение.
 // -----------------------------------------------------------
 async function validateToken(accessToken) {
   const res = await axios.get(`${OAUTH_BASE_URL}/oauth2/validate`, {
-    headers: { Authorization: `Bearer ${accessToken}` },
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      Accept: 'application/json',
+    },
   });
-  return res.data;
+  return res.data; // { user_uuid, company_uuid, client_uuid }
 }
 
 // -----------------------------------------------------------
-// Получение информации о пользователе
-// -----------------------------------------------------------
-async function getUserInfo(userUuid) {
-  if (!userUuid) return null;
-  try {
-    const url = `https://api.amo.io/v1.0/users/${userUuid}`;
-    const response = await axios.get(url, {
-      headers: { Authorization: `Bearer ${ACCESS_TOKEN}` },
-    });
-    return response.data?.name || null;
-  } catch (error) {
-    console.error(`❌ Ошибка при получении пользователя ${userUuid}:`, error.message);
-    return null;
-  }
-}
-
-// -----------------------------------------------------------
-// Разбор входящего сообщения с вложениями
+// Разбор входящего сообщения (то, что amoMessenger присылает
+// на наш /webhook/amomessenger при получении сообщения)
 // -----------------------------------------------------------
 function parseIncomingMessage(body) {
-  const message = body?._embedded?.message;
-  const author = message?.author;
-  const userId = author?.user_id;
-  const text = message?.text || '';
+  // ВРЕМЕННО (для отладки): печатаем весь запрос целиком,
+  // чтобы свериться с реальным форматом. Уберём эту строку,
+  // как только всё заработает.
+  console.log('RAW BODY от amoMessenger:', JSON.stringify(body, null, 2));
 
-  let attachments = [];
-  if (message?.attachments) {
-    for (const file of message.attachments) {
-      if (file.type && file[file.type]) {
-        const sub = file[file.type];
-        const link = sub.link || sub.url || '';
-        const name = sub.filename || sub.name || `${file.type}.file`;
-        if (link) attachments.push({ name, url: link });
-      }
-    }
-  }
-  return { userId, userName: undefined, text, attachments, raw: body };
+  // Реальная структура вебхука amoMessenger (из официального
+  // примера webhook.php):
+  // body._embedded.message               — само сообщение
+  // body._embedded.conversation_identity — "адрес" переписки,
+  //                                        нужен для ответа
+  // body._embedded.context.company_id    — id компании
+  const message = body?._embedded?.message || {};
+  const conversationIdentity = body?._embedded?.conversation_identity || {};
+
+  return {
+    // Именно conversation_identity.direct_id используется потом
+    // в адресе запроса на отправку сообщения (см. sendMessage).
+    // Поэтому храним его в Планфикс как "amoMessenger ID".
+    userId: conversationIdentity.direct_id,
+    userName: message.author?.name || message.from?.name || null,
+    text: message.text,
+    messageId: message.id,
+    conversationIdentity,
+    raw: body,
+  };
 }
 
 // -----------------------------------------------------------
-// Отправка текстового сообщения (без файлов)
+// Отправка сообщения пользователю amoMessenger
 // -----------------------------------------------------------
-async function sendMessage(userId, text) {
-  const url = `${API_BASE_URL}/direct/${userId}/sendMessage`;
-  const res = await axios.post(url, { text }, {
-    headers: { Authorization: `Bearer ${ACCESS_TOKEN}` },
+// Точный формат из официального примера (webhook.php):
+//   POST https://api.amo.io/v1.3/direct/{direct_id}/sendMessage
+//   body: { text }  (либо ещё attachments/reply_to при желании)
+// {direct_id} — это то же значение, что мы сохранили как
+// "amoMessenger ID" в задаче Планфикс (userId из parseIncomingMessage).
+async function sendMessage(directId, text) {
+  const url = `${API_BASE_URL}/direct/${directId}/sendMessage`;
+
+  const body = { text };
+
+  const res = await axios.post(url, body, {
+    headers: {
+      Authorization: `Bearer ${ACCESS_TOKEN}`,
+      'Content-Type': 'application/json',
+    },
   });
+
   return res.data;
-}
-
-// -----------------------------------------------------------
-// Скачивание файла по URL
-// -----------------------------------------------------------
-async function downloadFile(url) {
-  try {
-    const response = await axios({
-      method: 'get',
-      url: url,
-      responseType: 'stream',
-    });
-    return response.data; // stream
-  } catch (err) {
-    console.error('❌ Ошибка скачивания файла:', err.message);
-    throw err;
-  }
-}
-
-// -----------------------------------------------------------
-// Загрузка файла в amoMessenger (через API upload)
-// -----------------------------------------------------------
-async function uploadFileToAmo(fileStream, fileName) {
-  const form = new FormData();
-  form.append('file', fileStream, { filename: fileName });
-
-  const url = `${API_BASE_URL}/files/upload`;
-  try {
-    const res = await axios.post(url, form, {
-      headers: {
-        ...form.getHeaders(),
-        Authorization: `Bearer ${ACCESS_TOKEN}`,
-      },
-    });
-    console.log('✅ Файл загружен в amoMessenger:', res.data);
-    // В ответе приходит file_id
-    return res.data.file_id || res.data.id || res.data.attachment_id;
-  } catch (err) {
-    console.error('❌ Ошибка загрузки файла в amoMessenger:', err.response?.data || err.message);
-    throw err;
-  }
-}
-
-// -----------------------------------------------------------
-// Отправка сообщения с вложением (файлом)
-// -----------------------------------------------------------
-async function sendMessageWithFile(userId, text, fileUrl, fileName) {
-  try {
-    // 1. Скачиваем файл
-    const fileStream = await downloadFile(fileUrl);
-
-    // 2. Загружаем в amoMessenger
-    const fileId = await uploadFileToAmo(fileStream, fileName);
-    if (!fileId) {
-      throw new Error('Не удалось получить ID загруженного файла');
-    }
-
-    // 3. Отправляем сообщение с вложением
-    const url = `${API_BASE_URL}/direct/${userId}/sendMessage`;
-    const payload = {
-  text: text || '',
-  file_id: fileId,
-};
-    console.log('📤 Отправляем payload в amoMessenger:', JSON.stringify(payload, null, 2));
-    const res = await axios.post(url, payload, {
-      headers: { Authorization: `Bearer ${ACCESS_TOKEN}` },
-    });
-    console.log('✅ Сообщение с файлом отправлено');
-    return res.data;
-  } catch (err) {
-    console.error('❌ Ошибка отправки сообщения с файлом:', err.message);
-    if (err.response) {
-      console.error('  Статус:', err.response.status);
-      console.error('  Данные:', JSON.stringify(err.response.data, null, 2));
-    }
-    // Если не удалось отправить с файлом – пробуем только текст
-    if (text) {
-      console.log('📤 Отправляем только текст как fallback');
-      await sendMessage(userId, text);
-    }
-    throw err;
-  }
-}
-
-// -----------------------------------------------------------
-// Универсальная отправка сообщения (с файлами или без)
-// -----------------------------------------------------------
-async function sendMessageWithAttachments(userId, text, attachments = []) {
-  if (!attachments || attachments.length === 0) {
-    return sendMessage(userId, text);
-  }
-
-  const first = attachments[0];
-  if (first && first.url) {
-    const fileName = first.name || 'file';
-    return sendMessageWithFile(userId, text, first.url, fileName);
-  }
-
-  return sendMessage(userId, text);
 }
 
 module.exports = {
   parseIncomingMessage,
   sendMessage,
-  sendMessageWithAttachments,
   exchangeCodeForToken,
   validateToken,
-  getUserInfo,
 };
