@@ -206,66 +206,48 @@ async function uploadFileToAmo(fileStream, fileName) {
 }
 
 // -----------------------------------------------------------
-// Отправка сообщения с вложением (файлом)
-// -----------------------------------------------------------
-async function sendMessageWithFile(userId, text, fileUrl, fileName) {
-  try {
-    // 1. Скачиваем файл
-    const fileStream = await downloadFile(fileUrl);
-
-    // 2. Загружаем в amoMessenger
-    const fileId = await uploadFileToAmo(fileStream, fileName);
-    if (!fileId) {
-      throw new Error('Не удалось получить ID загруженного файла');
-    }
-
-    // 3. Отправляем сообщение с вложением
-    const url = `${API_BASE_URL}/direct/${userId}/sendMessage`;
-    const payload = {};
-    if (text) payload.text = text;
-    // Судя по ошибке валидации amoMessenger ("MessageRequest.attachments"),
-    // поле называется "attachments", а не "file_id". Точный формат внутри
-    // объекта не подтверждён документацией — пробуем самый вероятный
-    // вариант (массив объектов с file_id). Если снова будет ошибка
-    // валидации — пришлите точный текст ошибки, поправим по нему.
-    payload.attachments = [{ file_id: fileId }];
-
-    console.log('📤 Отправляем payload в amoMessenger:', JSON.stringify(payload, null, 2));
-    const res = await axios.post(url, payload, {
-      headers: { Authorization: `Bearer ${getAccessToken()}` },
-    });
-    console.log('✅ Сообщение с файлом отправлено');
-    return res.data;
-  } catch (err) {
-    console.error('❌ Ошибка отправки сообщения с файлом:', err.message);
-    if (err.response) {
-      console.error('  Статус:', err.response.status);
-      console.error('  Данные:', JSON.stringify(err.response.data, null, 2));
-    }
-    // Если не удалось отправить с файлом – пробуем только текст
-    if (text) {
-      console.log('📤 Отправляем только текст как fallback');
-      await sendMessage(userId, text);
-    }
-    throw err;
-  }
-}
-
-// -----------------------------------------------------------
-// Универсальная отправка сообщения (с файлами или без)
+// Универсальная отправка сообщения (с любым числом файлов или без них)
 // -----------------------------------------------------------
 async function sendMessageWithAttachments(userId, text, attachments = []) {
   if (!attachments || attachments.length === 0) {
     return sendMessage(userId, text);
   }
 
-  const first = attachments[0];
-  if (first && first.url) {
-    const fileName = first.name || 'file';
-    return sendMessageWithFile(userId, text, first.url, fileName);
-  }
+  try {
+    // Загружаем КАЖДЫЙ файл по очереди (а не только первый)
+    const fileIds = [];
+    for (const file of attachments) {
+      if (!file || !file.url) continue;
+      console.log(`📥 Скачиваем файл: ${file.name || file.url}`);
+      const fileStream = await downloadFile(file.url);
+      const fileId = await uploadFileToAmo(fileStream, file.name || 'file');
+      if (fileId) fileIds.push(fileId);
+    }
 
-  return sendMessage(userId, text);
+    if (fileIds.length === 0) {
+      // Ни один файл не загрузился — отправляем хотя бы текст
+      return sendMessage(userId, text);
+    }
+
+    const url = `${API_BASE_URL}/direct/${userId}/sendMessage`;
+    const payload = {};
+    if (text) payload.text = text;
+    payload.attachments = fileIds.map((id) => ({ file_id: id }));
+
+    console.log(`📤 Отправляем сообщение с ${fileIds.length} вложением(ями):`, JSON.stringify(payload, null, 2));
+    const res = await axios.post(url, payload, {
+      headers: { Authorization: `Bearer ${getAccessToken()}` },
+    });
+    console.log('✅ Сообщение с вложениями отправлено');
+    return res.data;
+  } catch (err) {
+    console.error('❌ Ошибка отправки сообщения с вложениями:', err.response?.data || err.message);
+    if (text) {
+      console.log('📤 Отправляем только текст как fallback');
+      await sendMessage(userId, text);
+    }
+    throw err;
+  }
 }
 
 module.exports = {
@@ -276,4 +258,5 @@ module.exports = {
   validateToken,
   getUserInfo,
   startTokenAutoRefresh,
+  refreshAccessTokenManually: refreshAccessToken,
 };
