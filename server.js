@@ -10,7 +10,6 @@ const amo = require('./amomessenger');
 
 const app = express();
 
-// --- ПАРСИНГ ТЕЛА ЗАПРОСА ---
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
@@ -25,36 +24,23 @@ function checkSecret(req, res, next) {
 }
 
 // -----------------------------------------------------------
-// Декодирование HTML-сущностей
+// Защита от повторной обработки ОДНОГО И ТОГО ЖЕ сообщения
+// от Планфикс — используем messageId, который Планфикс присылает
+// в каждой команде newMessage (это надёжнее, чем сравнивать текст).
 // -----------------------------------------------------------
-function decodeHtmlEntities(text) {
-  if (!text) return '';
-  const entities = {
-    '&nbsp;': ' ',
-    '&lt;': '<',
-    '&gt;': '>',
-    '&amp;': '&',
-    '&quot;': '"',
-    '&#39;': "'",
-    '&laquo;': '«',
-    '&raquo;': '»',
-    '&mdash;': '—',
-    '&ndash;': '–',
-  };
-  let result = text;
-  for (const [entity, char] of Object.entries(entities)) {
-    result = result.split(entity).join(char);
+const seenPlanfixMessageIds = new Set();
+function isDuplicatePlanfixMessage(messageId) {
+  if (!messageId) return false; // если ID вдруг не пришёл — не блокируем, лучше отправить лишний раз, чем ни разу
+  if (seenPlanfixMessageIds.has(messageId)) return true;
+  seenPlanfixMessageIds.add(messageId);
+  if (seenPlanfixMessageIds.size > 2000) {
+    // не даём множеству расти бесконечно
+    const arr = Array.from(seenPlanfixMessageIds);
+    seenPlanfixMessageIds.clear();
+    arr.slice(-1000).forEach((id) => seenPlanfixMessageIds.add(id));
   }
-  result = result.replace(/<[^>]*>/g, '');
-  return result.trim();
+  return false;
 }
-
-// Хранилище для предотвращения дублирования исходящих сообщений
-const processedMessages = new Set();
-
-// --- Кеш для ожидания файлов ---
-// Храним { taskId: { text, timer, resolved } }
-const pendingTexts = new Map();
 
 // -----------------------------------------------------------
 // OAuth callback
@@ -85,19 +71,15 @@ app.post('/webhook/amomessenger', checkSecret, async (req, res) => {
   console.log('📩 Полный body от amoMessenger:', JSON.stringify(req.body, null, 2));
 
   try {
-    const { userId, userName, text, attachments, raw } = amo.parseIncomingMessage(req.body);
+    const { userId, userName, text, attachments } = amo.parseIncomingMessage(req.body);
 
     let messageText = text;
     if (!messageText && attachments && attachments.length > 0) {
-      const names = attachments.map(a => a.name).join(', ');
+      const names = attachments.map((a) => a.name).join(', ');
       messageText = `Файлы: ${names}`;
     }
 
     console.log('Входящее сообщение от', userId, ':', messageText);
-    if (attachments && attachments.length > 0) {
-      console.log('📎 Вложений:', attachments.length);
-      attachments.forEach(a => console.log('  -', a.name, '=>', a.url));
-    }
 
     if (!userId || (!messageText && (!attachments || attachments.length === 0))) {
       console.log('Пустое сообщение, игнорируем');
@@ -105,30 +87,19 @@ app.post('/webhook/amomessenger', checkSecret, async (req, res) => {
     }
 
     let realUserName = userName;
-    if (!realUserName || realUserName.startsWith('Пользователь ') || realUserName === userId) {
+    if (!realUserName) {
       const nameFromApi = await amo.getUserInfo(userId);
       realUserName = nameFromApi || userId;
-      console.log(`👤 Имя пользователя: ${realUserName}`);
     }
 
-    const contactId = await planfix.findOrCreateContactId(realUserName);
-    console.log(`✅ Контакт ID: ${contactId}`);
-
-    const openTask = await planfix.findOpenTaskByContactId(contactId);
-
-    if (openTask) {
-      await planfix.addComment(openTask.id, messageText);
-      console.log('➕ Комментарий добавлен в задачу #' + openTask.id);
-    } else {
-      const newTask = await planfix.createTask({
-        contactId,
-        amoUserId: userId,
-        amoUserName: realUserName,
-        text: messageText,
-        attachments,
-      });
-      console.log('🆕 Создана новая задача:', JSON.stringify(newTask));
-    }
+    // Единственный вызов: chatId и contactId = userId, всегда одинаковые.
+    // Планфикс сам находит/создаёт нужный контакт и задачу.
+    await planfix.sendMessageToPlanfix({
+      amoUserId: userId,
+      amoUserName: realUserName,
+      text: messageText,
+      attachments,
+    });
 
     res.sendStatus(200);
   } catch (err) {
@@ -138,143 +109,61 @@ app.post('/webhook/amomessenger', checkSecret, async (req, res) => {
 });
 
 // -----------------------------------------------------------
-// Вебхук от Planfix (исходящие ответы и уведомления)
+// Вебхук ОТ Планфикс (ответ специалиста поддержки в задаче)
+// Формат — официальная команда newMessage из документации:
+// https://planfix.com/ru/help/Список_команд_API_для_чатов
 // -----------------------------------------------------------
+const PLANFIX_REPLY_TOKEN = process.env.PLANFIX_WEBCHAT_REPLY_TOKEN;
+
 app.post('/webhook/planfix', checkSecret, async (req, res) => {
-  console.log('📩 Полный запрос от Планфикса:');
-  console.log('  Headers:', req.headers);
-  console.log('  Body:', req.body);
+  console.log('📩 Запрос от Планфикс (ответ оператора):', JSON.stringify(req.body, null, 2));
 
   try {
-    const taskId = req.headers['x-planfix-task'];
-    let amoUserId = null;
-    let commentText = '';
-    let attachments = [];
+    const { cmd, chatId, token, message, messageId, attachments } = req.body;
 
-    // --- ОПРЕДЕЛЯЕМ amoUserId ---
-    if (req.body.amoUserId) {
-      amoUserId = req.body.amoUserId;
-    } else if (req.body.chatId) {
-      amoUserId = req.body.chatId;
+    if (PLANFIX_REPLY_TOKEN && token !== PLANFIX_REPLY_TOKEN) {
+      console.warn('⚠️ Неверный token от Планфикс, запрос отклонён');
+      return res.status(401).json({ error: 'Invalid token' });
     }
 
-    if (!amoUserId && taskId) {
-      console.log(`🔍 Получаем amoUserId для задачи ${taskId} через API...`);
-      amoUserId = await planfix.getAmoUserIdFromTask(taskId);
-    }
-
-    if (!amoUserId) {
-      console.warn('⚠️ amoUserId не найден, пропускаем');
+    if (cmd !== 'newMessage') {
+      console.log('Команда не newMessage, игнорируем:', cmd);
       return res.sendStatus(200);
     }
 
-    // --- ИЗВЛЕКАЕМ ТЕКСТ ---
-    commentText = req.body.commentText || req.body.comment || req.body.text || req.body.message || req.body.description || '';
+    if (!chatId || !message) {
+      console.log('Нет chatId или message в запросе от Планфикс');
+      return res.status(400).json({ error: 'Invalid parameters' });
+    }
 
-    // --- ИЗВЛЕКАЕМ ВЛОЖЕНИЯ ---
-    if (req.body.attachments) {
-      if (Array.isArray(req.body.attachments)) {
-        attachments = req.body.attachments;
-      } else if (typeof req.body.attachments === 'object') {
-        if (req.body.attachments.url && req.body.attachments.name) {
-          attachments.push({ name: req.body.attachments.name, url: req.body.attachments.url });
-        } else {
-          const keys = Object.keys(req.body.attachments).filter(k => !isNaN(k));
-          attachments = keys.map(k => req.body.attachments[k]);
-        }
+    if (isDuplicatePlanfixMessage(messageId)) {
+      console.log('⚠️ Это сообщение уже было обработано (messageId=' + messageId + '), пропускаем повтор');
+      return res.status(200).json({ chatId, contactId: chatId });
+    }
+
+    // Приводим вложения к единому виду: массив {name, url}
+    let parsedAttachments = [];
+    if (attachments) {
+      if (Array.isArray(attachments)) {
+        parsedAttachments = attachments;
+      } else if (attachments.name && attachments.url) {
+        // Одно вложение (express.urlencoded даёт объект, не массив)
+        const names = Array.isArray(attachments.name) ? attachments.name : [attachments.name];
+        const urls = Array.isArray(attachments.url) ? attachments.url : [attachments.url];
+        parsedAttachments = names.map((name, i) => ({ name, url: urls[i] }));
       }
     }
 
-    // Очищаем HTML
-    const cleanText = decodeHtmlEntities(commentText);
+    await amo.sendMessageWithAttachments(chatId, message, parsedAttachments);
+    console.log('📤 Ответ отправлен пользователю amoMessenger', chatId);
 
-    // --- ЛОГИКА ОБЪЕДИНЕНИЯ ТЕКСТА И ФАЙЛА ---
-    const hasAttachments = attachments && attachments.length > 0;
-    const hasText = cleanText && cleanText.length > 0;
-
-    // Если есть вложения – это основной запрос (с файлом)
-    if (hasAttachments) {
-      // Проверяем, не ждём ли мы текст для этой задачи
-      if (taskId && pendingTexts.has(taskId)) {
-        const pending = pendingTexts.get(taskId);
-        console.log(`ℹ️ Найден ожидающий текст для задачи ${taskId}: "${pending.text}", объединяем с файлом`);
-        clearTimeout(pending.timer);
-        pendingTexts.delete(taskId);
-        // Отправляем с объединённым текстом
-        const finalText = pending.text || cleanText;
-        await sendMessageWithAttachmentsAndDedup(amoUserId, finalText, attachments, taskId);
-      } else {
-        // Отправляем с текущим текстом (если есть)
-        await sendMessageWithAttachmentsAndDedup(amoUserId, cleanText, attachments, taskId);
-      }
-    } else if (hasText) {
-      // Если есть только текст – откладываем отправку, чтобы дождаться файла
-      if (taskId) {
-        // Если уже есть ожидающий текст для этой задачи, обновляем его (берём последний)
-        if (pendingTexts.has(taskId)) {
-          console.log(`ℹ️ Обновляем ожидающий текст для задачи ${taskId} на "${cleanText}"`);
-          clearTimeout(pendingTexts.get(taskId).timer);
-          pendingTexts.delete(taskId);
-        }
-        console.log(`⏳ Откладываем отправку текста для задачи ${taskId} на 1 секунду`);
-        const timer = setTimeout(() => {
-          // Таймер сработал – файл не пришёл, отправляем текст
-          if (pendingTexts.has(taskId)) {
-            const pending = pendingTexts.get(taskId);
-            console.log(`⏰ Таймаут для задачи ${taskId}, отправляем текст: "${pending.text}"`);
-            pendingTexts.delete(taskId);
-            // Отправляем текст (без файла)
-            sendMessageWithAttachmentsAndDedup(amoUserId, pending.text, [], taskId).catch(err => {
-              console.error('❌ Ошибка отправки текста по таймауту:', err.message);
-            });
-          }
-        }, 1000); // ждём 1 секунду
-        pendingTexts.set(taskId, { text: cleanText, timer });
-      } else {
-        // Если нет taskId – отправляем сразу (например, если пришёл JSON без taskId, но такое бывает)
-        await sendMessageWithAttachmentsAndDedup(amoUserId, cleanText, [], taskId);
-      }
-    } else {
-      // Нет ни текста, ни вложений
-      console.warn('⚠️ Нет текста комментария и вложений, пропускаем');
-      return res.sendStatus(200);
-    }
-
-    // Всегда отвечаем 200, чтобы Планфикс не переотправлял
-    res.sendStatus(200);
+    res.status(200).json({ chatId, contactId: chatId });
   } catch (err) {
-    console.error('❌ Ошибка обработки уведомления из Планфикс:', err.message);
-    if (err.response) {
-      console.error('  Статус:', err.response.status);
-      console.error('  Данные:', JSON.stringify(err.response.data, null, 2));
-    }
-    res.sendStatus(200);
+    console.error('❌ Ошибка обработки уведомления из Planfix:', err.message);
+    // Планфикс ждёт 200 при успехе; при ошибке шлём 400, чтобы не путать с "успешно доставлено"
+    res.status(400).json({ error: 'Invalid parameters' });
   }
 });
-
-// -----------------------------------------------------------
-// ВСПОМОГАТЕЛЬНАЯ ФУНКЦИЯ ДЛЯ ОТПРАВКИ С ДЕДУПЛИКАЦИЕЙ
-// -----------------------------------------------------------
-async function sendMessageWithAttachmentsAndDedup(amoUserId, text, attachments, taskId) {
-  // Очищаем текст от HTML (повторно, на всякий случай)
-  const cleanText = decodeHtmlEntities(text);
-  const idForDedup = taskId || amoUserId;
-  const messageKey = `${idForDedup}_${cleanText.substring(0, 50)}`;
-  if (processedMessages.has(messageKey)) {
-    console.log(`⚠️ Дублирующее сообщение для ${idForDedup}, пропускаем`);
-    return;
-  }
-  processedMessages.add(messageKey);
-  if (processedMessages.size > 1000) {
-    const arr = Array.from(processedMessages);
-    processedMessages.clear();
-    arr.slice(-500).forEach(k => processedMessages.add(k));
-  }
-
-  console.log(`📤 Отправляем сообщение пользователю ${amoUserId} с ${attachments.length} вложением(ями), текст: "${cleanText}"`);
-  await amo.sendMessageWithAttachments(amoUserId, cleanText, attachments);
-  console.log('✅ Сообщение успешно отправлено в amoMessenger');
-}
 
 // -----------------------------------------------------------
 // Проверка работоспособности
