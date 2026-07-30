@@ -5,7 +5,6 @@
 const axios = require('axios');
 const FormData = require('form-data');
 
-const ACCESS_TOKEN = process.env.AMO_ACCESS_TOKEN;
 const API_BASE_URL = process.env.AMO_API_BASE_URL || 'https://api.amo.io/v1.3';
 const CLIENT_ID = process.env.AMO_CLIENT_ID;
 const CLIENT_SECRET = process.env.AMO_CLIENT_SECRET;
@@ -13,8 +12,65 @@ const REDIRECT_URI = process.env.AMO_REDIRECT_URI;
 
 const OAUTH_BASE_URL = 'https://id.amo.tm';
 
+// ============================================================
+//  АВТООБНОВЛЕНИЕ ТОКЕНА
+//  Токен живёт 24 часа. Храним его в памяти (не в env-переменной
+//  напрямую), а по расписанию обновляем через refresh_token,
+//  чтобы не приходилось переустанавливать приложение вручную.
+// ============================================================
+let currentAccessToken = process.env.AMO_ACCESS_TOKEN || null;
+let currentRefreshToken = process.env.AMO_REFRESH_TOKEN || null;
+
+function getAccessToken() {
+  return currentAccessToken;
+}
+
+// Обновляет access_token через refresh_token. Вызывается сама
+// по расписанию, а также один раз сразу при запуске сервера.
+async function refreshAccessToken() {
+  if (!currentRefreshToken) {
+    console.warn('⚠️ Нет refresh_token — автообновление невозможно, используется текущий AMO_ACCESS_TOKEN как есть');
+    return;
+  }
+  if (!CLIENT_ID || !CLIENT_SECRET) {
+    console.warn('⚠️ Нет AMO_CLIENT_ID/AMO_CLIENT_SECRET — автообновление невозможно');
+    return;
+  }
+
+  const params = new URLSearchParams();
+  params.append('grant_type', 'refresh_token');
+  params.append('client_id', CLIENT_ID);
+  params.append('client_secret', CLIENT_SECRET);
+  params.append('refresh_token', currentRefreshToken);
+
+  try {
+    const res = await axios.post(
+      `${OAUTH_BASE_URL}/oauth2/access_token`,
+      params,
+      { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } }
+    );
+    currentAccessToken = res.data.access_token;
+    // refresh_token тоже обычно обновляется новым значением
+    if (res.data.refresh_token) {
+      currentRefreshToken = res.data.refresh_token;
+    }
+    console.log('🔄 Токен amoMessenger автоматически обновлён, действителен ещё', res.data.expires_in, 'секунд');
+  } catch (err) {
+    console.error('❌ Не удалось автоматически обновить токен:', err.response?.data || err.message);
+  }
+}
+
+// Запускаем: сразу при старте сервера (на случай, если сохранённый
+// AMO_ACCESS_TOKEN уже устарел) и затем каждые 12 часов.
+function startTokenAutoRefresh() {
+  if (currentRefreshToken) {
+    refreshAccessToken();
+  }
+  setInterval(refreshAccessToken, 12 * 60 * 60 * 1000); // каждые 12 часов
+}
+
 // -----------------------------------------------------------
-// Обмен временного кода на постоянный access_token
+// Обмен временного кода на постоянный access_token (при установке приложения)
 // -----------------------------------------------------------
 async function exchangeCodeForToken(code) {
   if (!CLIENT_ID || !CLIENT_SECRET || !REDIRECT_URI) {
@@ -34,6 +90,10 @@ async function exchangeCodeForToken(code) {
       params,
       { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } }
     );
+    // Запоминаем оба токена в памяти сразу же — дальше сервер
+    // сам будет обновлять access_token по расписанию.
+    currentAccessToken = res.data.access_token;
+    currentRefreshToken = res.data.refresh_token;
     return res.data;
   } catch (err) {
     console.error('❌ Ошибка обмена кода на токен:', err.response?.data || err.message);
@@ -59,7 +119,7 @@ async function getUserInfo(userUuid) {
   try {
     const url = `https://api.amo.io/v1.0/users/${userUuid}`;
     const response = await axios.get(url, {
-      headers: { Authorization: `Bearer ${ACCESS_TOKEN}` },
+      headers: { Authorization: `Bearer ${getAccessToken()}` },
     });
     return response.data?.name || null;
   } catch (error) {
@@ -97,7 +157,7 @@ function parseIncomingMessage(body) {
 async function sendMessage(userId, text) {
   const url = `${API_BASE_URL}/direct/${userId}/sendMessage`;
   const res = await axios.post(url, { text }, {
-    headers: { Authorization: `Bearer ${ACCESS_TOKEN}` },
+    headers: { Authorization: `Bearer ${getAccessToken()}` },
   });
   return res.data;
 }
@@ -134,7 +194,7 @@ async function uploadFileToAmo(fileStream, fileName) {
     const res = await axios.post(url, form, {
       headers: {
         ...form.getHeaders(),
-        Authorization: `Bearer ${ACCESS_TOKEN}`,
+        Authorization: `Bearer ${getAccessToken()}`,
       },
     });
     console.log('✅ Файл загружен в amoMessenger:', res.data);
@@ -161,13 +221,18 @@ async function sendMessageWithFile(userId, text, fileUrl, fileName) {
 
     // 3. Отправляем сообщение с вложением
     const url = `${API_BASE_URL}/direct/${userId}/sendMessage`;
-    const payload = {
-  text: text || '',
-  file_id: fileId,
-};
+    const payload = {};
+    if (text) payload.text = text;
+    // Судя по ошибке валидации amoMessenger ("MessageRequest.attachments"),
+    // поле называется "attachments", а не "file_id". Точный формат внутри
+    // объекта не подтверждён документацией — пробуем самый вероятный
+    // вариант (массив объектов с file_id). Если снова будет ошибка
+    // валидации — пришлите точный текст ошибки, поправим по нему.
+    payload.attachments = [{ file_id: fileId }];
+
     console.log('📤 Отправляем payload в amoMessenger:', JSON.stringify(payload, null, 2));
     const res = await axios.post(url, payload, {
-      headers: { Authorization: `Bearer ${ACCESS_TOKEN}` },
+      headers: { Authorization: `Bearer ${getAccessToken()}` },
     });
     console.log('✅ Сообщение с файлом отправлено');
     return res.data;
@@ -210,4 +275,5 @@ module.exports = {
   exchangeCodeForToken,
   validateToken,
   getUserInfo,
+  startTokenAutoRefresh,
 };
