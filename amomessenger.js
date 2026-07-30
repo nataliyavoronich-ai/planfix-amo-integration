@@ -37,6 +37,14 @@ async function refreshAccessToken() {
     return;
   }
 
+  // ДИАГНОСТИКА: показываем начало/конец и длину токена, который
+  // реально используется — так можно сверить с тем, что в Render,
+  // и увидеть, не обрезался ли он при копировании.
+  console.log(
+    `🔍 Пробуем обновить токен. refresh_token: длина=${currentRefreshToken.length}, ` +
+    `начало="${currentRefreshToken.slice(0, 12)}", конец="${currentRefreshToken.slice(-12)}"`
+  );
+
   const params = new URLSearchParams();
   params.append('grant_type', 'refresh_token');
   params.append('client_id', CLIENT_ID);
