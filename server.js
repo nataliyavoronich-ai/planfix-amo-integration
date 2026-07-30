@@ -131,8 +131,8 @@ app.post('/webhook/planfix', checkSecret, async (req, res) => {
       return res.sendStatus(200);
     }
 
-    if (!chatId || !message) {
-      console.log('Нет chatId или message в запросе от Планфикс');
+    if (!chatId || (!message && !attachments)) {
+      console.log('Нет chatId и нет ни текста, ни вложений в запросе от Планфикс');
       return res.status(400).json({ error: 'Invalid parameters' });
     }
 
