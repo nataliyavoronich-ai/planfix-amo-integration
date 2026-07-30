@@ -174,6 +174,14 @@ app.get('/', (req, res) => {
   res.send('Интеграция работает 🚀');
 });
 
+// ВРЕМЕННЫЙ диагностический адрес — запускает обновление токена
+// вручную, чтобы не ждать 12 часов и сразу увидеть результат в Logs.
+// Откройте в браузере: /debug/refresh-token?secret=ВАШ_WEBHOOK_SECRET
+app.get('/debug/refresh-token', checkSecret, async (req, res) => {
+  await amo.refreshAccessTokenManually();
+  res.send('Проверьте Logs на Render — там будет результат обновления токена.');
+});
+
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log('✅ Сервер запущен на порту ' + PORT);
