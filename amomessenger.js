@@ -12,6 +12,40 @@ const REDIRECT_URI = process.env.AMO_REDIRECT_URI;
 
 const OAUTH_BASE_URL = 'https://id.amo.tm';
 
+// -----------------------------------------------------------
+// Upstash Redis — храним здесь САМЫЙ СВЕЖИЙ refresh_token,
+// чтобы он не терялся при "засыпании"/перезапуске сервера
+// на бесплатном тарифе Render.
+// -----------------------------------------------------------
+const UPSTASH_URL = process.env.UPSTASH_REDIS_REST_URL;
+const UPSTASH_TOKEN = process.env.UPSTASH_REDIS_REST_TOKEN;
+const UPSTASH_KEY = 'amo_refresh_token';
+
+async function saveRefreshTokenToUpstash(token) {
+  if (!UPSTASH_URL || !UPSTASH_TOKEN) return;
+  try {
+    await axios.get(`${UPSTASH_URL}/set/${UPSTASH_KEY}/${encodeURIComponent(token)}`, {
+      headers: { Authorization: `Bearer ${UPSTASH_TOKEN}` },
+    });
+    console.log('💾 refresh_token сохранён в Upstash');
+  } catch (err) {
+    console.error('❌ Не удалось сохранить refresh_token в Upstash:', err.response?.data || err.message);
+  }
+}
+
+async function loadRefreshTokenFromUpstash() {
+  if (!UPSTASH_URL || !UPSTASH_TOKEN) return null;
+  try {
+    const res = await axios.get(`${UPSTASH_URL}/get/${UPSTASH_KEY}`, {
+      headers: { Authorization: `Bearer ${UPSTASH_TOKEN}` },
+    });
+    return res.data?.result || null;
+  } catch (err) {
+    console.error('❌ Не удалось прочитать refresh_token из Upstash:', err.response?.data || err.message);
+    return null;
+  }
+}
+
 // ============================================================
 //  АВТООБНОВЛЕНИЕ ТОКЕНА
 //  Токен живёт 24 часа. Храним его в памяти (не в env-переменной
