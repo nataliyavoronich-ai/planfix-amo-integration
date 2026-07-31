@@ -267,46 +267,55 @@ async function uploadFileToAmo(fileStream, fileName) {
 }
 
 // -----------------------------------------------------------
-// Универсальная отправка сообщения (с любым числом файлов или без них)
+// Универсальная отправка сообщения (с любым числом файлов или без них).
+// Текст уходит отдельным сообщением, а КАЖДЫЙ файл — отдельным
+// следующим сообщением (по одному), а не всё сразу пакетом.
+// Так один "неудачный" файл не мешает остальным дойти.
 // -----------------------------------------------------------
 async function sendMessageWithAttachments(userId, text, attachments = []) {
   if (!attachments || attachments.length === 0) {
     return sendMessage(userId, text);
   }
 
-  try {
-    const fileIds = [];
-    for (const file of attachments) {
-      if (!file || !file.url) continue;
+  const results = [];
+
+  // 1. Текст — отдельным сообщением, если он есть
+  if (text) {
+    try {
+      const res = await sendMessage(userId, text);
+      results.push(res);
+    } catch (err) {
+      console.error('❌ Не удалось отправить текст:', err.response?.data || err.message);
+    }
+  }
+
+  // 2. Каждый файл — отдельным сообщением
+  const url = `${API_BASE_URL}/direct/${userId}/sendMessage`;
+  for (const file of attachments) {
+    if (!file || !file.url) continue;
+    try {
       console.log(`📥 Скачиваем файл: ${file.name || file.url}`);
       const fileStream = await downloadFile(file.url);
       const fileId = await uploadFileToAmo(fileStream, file.name || 'file');
-      if (fileId) fileIds.push(fileId);
-    }
+      if (!fileId) {
+        console.warn(`⚠️ Файл "${file.name}" не загрузился, пропускаем`);
+        continue;
+      }
 
-    if (fileIds.length === 0) {
-      return sendMessage(userId, text);
+      const payload = { attachments: [{ file_id: fileId }] };
+      console.log(`📤 Отправляем файл "${file.name}" отдельным сообщением`);
+      const res = await axios.post(url, payload, {
+        headers: { Authorization: `Bearer ${getAccessToken()}` },
+      });
+      console.log(`✅ Файл "${file.name}" отправлен`);
+      results.push(res.data);
+    } catch (err) {
+      console.error(`❌ Не удалось отправить файл "${file.name}":`, err.response?.data || err.message);
+      // не прерываем цикл — пробуем отправить остальные файлы
     }
-
-    const url = `${API_BASE_URL}/direct/${userId}/sendMessage`;
-    const payload = {};
-    if (text) payload.text = text;
-    payload.attachments = fileIds.map((id) => ({ file_id: id }));
-
-    console.log(`📤 Отправляем сообщение с ${fileIds.length} вложением(ями):`, JSON.stringify(payload, null, 2));
-    const res = await axios.post(url, payload, {
-      headers: { Authorization: `Bearer ${getAccessToken()}` },
-    });
-    console.log('✅ Сообщение с вложениями отправлено');
-    return res.data;
-  } catch (err) {
-    console.error('❌ Ошибка отправки сообщения с вложениями:', err.response?.data || err.message);
-    if (text) {
-      console.log('📤 Отправляем только текст как fallback');
-      await sendMessage(userId, text);
-    }
-    throw err;
   }
+
+  return results;
 }
 
 module.exports = {
