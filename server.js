@@ -117,6 +117,41 @@ app.post('/webhook/amomessenger', checkSecret, async (req, res) => {
 // -----------------------------------------------------------
 const PLANFIX_REPLY_TOKEN = process.env.PLANFIX_WEBCHAT_REPLY_TOKEN;
 
+// -----------------------------------------------------------
+// Планфикс присылает текст комментария как HTML (у него визуальный
+// редактор). Переводим базовую разметку в Markdown, который,
+// судя по всему, понимает amoMessenger (жирный текст со звёздочками).
+// -----------------------------------------------------------
+function htmlToMarkdown(html) {
+  if (!html) return html;
+  let text = html;
+
+  text = text.replace(/<(b|strong)[^>]*>([\s\S]*?)<\/\1>/gi, '*$2*');
+  text = text.replace(/<(i|em)[^>]*>([\s\S]*?)<\/\1>/gi, '_$2_');
+  text = text.replace(/<a[^>]+href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/gi, (m, url, label) => {
+    const cleanLabel = label.replace(/<[^>]+>/g, '').trim();
+    return cleanLabel && cleanLabel !== url ? `${cleanLabel} (${url})` : url;
+  });
+
+  text = text.replace(/<br\s*\/?>/gi, '\n');
+  text = text.replace(/<\/p>\s*<p[^>]*>/gi, '\n\n');
+  text = text.replace(/<\/?p[^>]*>/gi, '');
+
+  // убираем все оставшиеся теги, которые не относятся к форматированию
+  text = text.replace(/<[^>]+>/g, '');
+
+  const entities = {
+    '&nbsp;': ' ', '&lt;': '<', '&gt;': '>', '&amp;': '&',
+    '&quot;': '"', '&#39;': "'", '&laquo;': '«', '&raquo;': '»',
+    '&mdash;': '—', '&ndash;': '–',
+  };
+  for (const [entity, char] of Object.entries(entities)) {
+    text = text.split(entity).join(char);
+  }
+
+  return text.trim();
+}
+
 app.post('/webhook/planfix', checkSecret, async (req, res) => {
   console.log('📩 Запрос от Планфикс (ответ оператора):', JSON.stringify(req.body, null, 2));
 
@@ -156,13 +191,16 @@ app.post('/webhook/planfix', checkSecret, async (req, res) => {
       }
     }
 
+    // Планфикс присылает HTML — переводим в Markdown-разметку
+    const cleanMessage = htmlToMarkdown(message);
+
     // Формируем подпись с именем сотрудника Планфикс:
     // *Имя Фамилия:*
     // Текст сообщения
     const employeeName = [userName, userLastName].filter(Boolean).join(' ').trim();
     const formattedMessage = employeeName
-      ? `*${employeeName}:*${message ? '\n' + message : ''}`
-      : message;
+      ? `*${employeeName}:*${cleanMessage ? '\n' + cleanMessage : ''}`
+      : cleanMessage;
 
     await amo.sendMessageWithAttachments(chatId, formattedMessage, parsedAttachments);
     console.log('📤 Ответ отправлен пользователю amoMessenger', chatId);
