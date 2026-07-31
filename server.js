@@ -121,7 +121,7 @@ app.post('/webhook/planfix', checkSecret, async (req, res) => {
   console.log('📩 Запрос от Планфикс (ответ оператора):', JSON.stringify(req.body, null, 2));
 
   try {
-    const { cmd, chatId, token, message, messageId, attachments } = req.body;
+    const { cmd, chatId, token, message, messageId, attachments, userName, userLastName } = req.body;
 
     if (PLANFIX_REPLY_TOKEN && token !== PLANFIX_REPLY_TOKEN) {
       console.warn('⚠️ Неверный token от Планфикс, запрос отклонён');
@@ -156,7 +156,15 @@ app.post('/webhook/planfix', checkSecret, async (req, res) => {
       }
     }
 
-    await amo.sendMessageWithAttachments(chatId, message, parsedAttachments);
+    // Формируем подпись с именем сотрудника Планфикс:
+    // *Имя Фамилия:*
+    // Текст сообщения
+    const employeeName = [userName, userLastName].filter(Boolean).join(' ').trim();
+    const formattedMessage = employeeName
+      ? `*${employeeName}:*${message ? '\n' + message : ''}`
+      : message;
+
+    await amo.sendMessageWithAttachments(chatId, formattedMessage, parsedAttachments);
     console.log('📤 Ответ отправлен пользователю amoMessenger', chatId);
 
     res.status(200).json({ chatId, contactId: chatId });
