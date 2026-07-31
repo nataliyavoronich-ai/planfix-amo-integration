@@ -43,7 +43,10 @@ async function sendMessageToPlanfix({ amoUserId, amoUserName, text, attachments 
   // всегда однозначно узнаёт этого человека, без поиска по имени.
   params.append('contactId', String(amoUserId));
   params.append('contactName', amoUserName || `Пользователь ${amoUserId}`);
-  params.append('title', `Обращение из amoMessenger: ${amoUserName || amoUserId}`);
+  // ВАЖНО: title намеренно НЕ передаём. Раньше он отправлялся при каждом
+  // сообщении, из-за чего Планфикс перезаписывал название задачи заново
+  // на каждый ответ (добавляя "(WebChat, amoMessenger)"). Название задачи
+  // теперь задаёт сам Планфикс один раз при создании, мы его не трогаем.
 
   attachments.forEach((file) => {
     if (file.name && file.url) {
