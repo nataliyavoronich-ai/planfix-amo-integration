@@ -142,6 +142,17 @@ function extractLinkEntities(text) {
   return { cleanText, entities };
 }
 
+// Планфикс оформляет цитируемое сообщение прямо в тексте, строками
+// с ">>" в начале (и добавляет одну лишнюю пустую ">>"-строку).
+// Приводим к более аккуратному виду с одинарным "> ".
+function cleanupPlanfixQuote(text) {
+  if (!text) return text;
+  let result = text.replace(/^>>\s*$/gm, '');       // убираем пустую служебную ">>"-строку
+  result = result.replace(/^>>\s?/gm, '> ');          // ">> " -> "> "
+  result = result.replace(/\n{3,}/g, '\n\n');         // схлопываем лишние пустые строки
+  return result.trim();
+}
+
 const PLANFIX_REPLY_TOKEN = process.env.PLANFIX_WEBCHAT_REPLY_TOKEN;
 
 // -----------------------------------------------------------
@@ -218,8 +229,10 @@ app.post('/webhook/planfix', checkSecret, async (req, res) => {
       }
     }
 
+    // Убираем служебное оформление цитаты Планфикс (">>")
+    const quoteCleanedMessage = cleanupPlanfixQuote(message);
     // Планфикс присылает HTML — переводим в Markdown-разметку (на случай HTML)
-    const cleanMessage = htmlToMarkdown(message);
+    const cleanMessage = htmlToMarkdown(quoteCleanedMessage);
     // Пробуем восстановить ссылку в кликабельную форму через entities
     const { cleanText, entities } = extractLinkEntities(cleanMessage);
 
