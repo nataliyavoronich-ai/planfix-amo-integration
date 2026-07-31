@@ -236,22 +236,27 @@ app.post('/webhook/planfix', checkSecret, async (req, res) => {
     // Пробуем восстановить ссылку в кликабельную форму через entities
     const { cleanText, entities } = extractLinkEntities(cleanMessage);
 
-    // Формируем подпись с именем сотрудника Планфикс:
-    // *Имя Фамилия:*
-    // Текст сообщения
+    // Формируем подпись с именем сотрудника Планфикс — жирным через
+    // entities (а не звёздочками), т.к. amoMessenger понимает разметку
+    // именно так (см. формат входящих сообщений).
     const employeeName = [userName, userLastName].filter(Boolean).join(' ').trim();
-    const formattedMessage = employeeName
-      ? `*${employeeName}:*${cleanText ? '\n' + cleanText : ''}`
+    const employeeLabel = employeeName ? `${employeeName}:` : '';
+    const formattedMessage = employeeLabel
+      ? `${employeeLabel}${cleanText ? '\n' + cleanText : ''}`
       : cleanText;
-    // Сдвигаем позиции entities на длину добавленной подписи с именем
+
+    // Сдвигаем позиции ссылочных entities на длину добавленной подписи
     const prefixLength = formattedMessage.length - cleanText.length;
-    const shiftedEntities = entities.map((e) => ({
+    const shiftedLinkEntities = entities.map((e) => ({
       ...e,
       start: e.start + prefixLength,
       end: e.end + prefixLength,
     }));
+    // Имя сотрудника — жирным (entity с start=0)
+    const nameEntity = employeeLabel ? [{ start: 0, end: employeeLabel.length, format: 'bold' }] : [];
+    const allEntities = [...nameEntity, ...shiftedLinkEntities];
 
-    await amo.sendMessageWithAttachments(chatId, formattedMessage, parsedAttachments, shiftedEntities);
+    await amo.sendMessageWithAttachments(chatId, formattedMessage, parsedAttachments, allEntities);
     console.log('📤 Ответ отправлен пользователю amoMessenger', chatId);
 
     res.status(200).json({ chatId, contactId: chatId });
