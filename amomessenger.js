@@ -192,6 +192,49 @@ async function getUserInfo(userUuid) {
   }
 }
 
+function escapeHtml(s) {
+  return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+// amoMessenger присылает форматирование отдельным массивом entities
+// (start/end/format), а не тегами внутри текста. Собираем из этого HTML,
+// чтобы Планфикс (у него HTML-редактор комментариев) отобразил разметку.
+function entitiesToHtml(text, entities) {
+  if (!entities || entities.length === 0) return escapeHtml(text).replace(/\n/g, '<br>');
+
+  const sorted = [...entities].sort((a, b) => a.start - b.start);
+  let result = '';
+  let pos = 0;
+
+  for (const ent of sorted) {
+    if (ent.start < pos) continue; // пропускаем пересекающиеся, чтобы не сломать разметку
+    result += escapeHtml(text.slice(pos, ent.start));
+    const chunk = escapeHtml(text.slice(ent.start, ent.end));
+    switch (ent.format) {
+      case 'bold':
+        result += `<b>${chunk}</b>`;
+        break;
+      case 'italic':
+        result += `<i>${chunk}</i>`;
+        break;
+      case 'underline':
+        result += `<u>${chunk}</u>`;
+        break;
+      case 'strikethrough':
+        result += `<s>${chunk}</s>`;
+        break;
+      case 'link':
+        result += `<a href="${escapeHtml(ent.url)}">${chunk}</a>`;
+        break;
+      default:
+        result += chunk;
+    }
+    pos = ent.end;
+  }
+  result += escapeHtml(text.slice(pos));
+  return result.replace(/\n/g, '<br>');
+}
+
 // -----------------------------------------------------------
 // Разбор входящего сообщения с вложениями
 // -----------------------------------------------------------
@@ -199,7 +242,11 @@ function parseIncomingMessage(body) {
   const message = body?._embedded?.message;
   const author = message?.author;
   const userId = author?.user_id;
-  const text = message?.text || '';
+  const rawText = message?.text || '';
+  const entities = message?.entities || [];
+
+  // Если есть форматирование — собираем HTML, иначе шлём как есть
+  const text = entities.length > 0 ? entitiesToHtml(rawText, entities) : rawText;
 
   let attachments = [];
   if (message?.attachments) {
@@ -218,9 +265,11 @@ function parseIncomingMessage(body) {
 // -----------------------------------------------------------
 // Отправка текстового сообщения (без файлов)
 // -----------------------------------------------------------
-async function sendMessage(userId, text) {
+async function sendMessage(userId, text, entities = []) {
   const url = `${API_BASE_URL}/direct/${userId}/sendMessage`;
-  const res = await axios.post(url, { text }, {
+  const payload = { text };
+  if (entities && entities.length > 0) payload.entities = entities;
+  const res = await axios.post(url, payload, {
     headers: { Authorization: `Bearer ${getAccessToken()}` },
   });
   return res.data;
@@ -272,9 +321,9 @@ async function uploadFileToAmo(fileStream, fileName) {
 // следующим сообщением (по одному), а не всё сразу пакетом.
 // Так один "неудачный" файл не мешает остальным дойти.
 // -----------------------------------------------------------
-async function sendMessageWithAttachments(userId, text, attachments = []) {
+async function sendMessageWithAttachments(userId, text, attachments = [], entities = []) {
   if (!attachments || attachments.length === 0) {
-    return sendMessage(userId, text);
+    return sendMessage(userId, text, entities);
   }
 
   const results = [];
@@ -282,7 +331,7 @@ async function sendMessageWithAttachments(userId, text, attachments = []) {
   // 1. Текст — отдельным сообщением, если он есть
   if (text) {
     try {
-      const res = await sendMessage(userId, text);
+      const res = await sendMessage(userId, text, entities);
       results.push(res);
     } catch (err) {
       console.error('❌ Не удалось отправить текст:', err.response?.data || err.message);
