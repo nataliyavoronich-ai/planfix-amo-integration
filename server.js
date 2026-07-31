@@ -115,6 +115,33 @@ app.post('/webhook/amomessenger', checkSecret, async (req, res) => {
 // Формат — официальная команда newMessage из документации:
 // https://planfix.com/ru/help/Список_команд_API_для_чатов
 // -----------------------------------------------------------
+// Планфикс отдаёт ссылки в виде "текст [ url ]" (уже без HTML-тега).
+// Пробуем собрать из этого entities — по той же схеме, что amoMessenger
+// использует для ВХОДЯЩИХ сообщений (симметричное предположение,
+// не подтверждено документацией напрямую для исходящих).
+function extractLinkEntities(text) {
+  if (!text) return { cleanText: text, entities: [] };
+
+  const entities = [];
+  let cleanText = '';
+  let lastIndex = 0;
+  const regex = /(\S.*?)\s\[\s(https?:\/\/\S+)\s\]/g;
+  let match;
+
+  while ((match = regex.exec(text)) !== null) {
+    const [full, label, url] = match;
+    cleanText += text.slice(lastIndex, match.index);
+    const start = cleanText.length;
+    cleanText += label;
+    const end = cleanText.length;
+    entities.push({ start, end, format: 'link', url });
+    lastIndex = match.index + full.length;
+  }
+  cleanText += text.slice(lastIndex);
+
+  return { cleanText, entities };
+}
+
 const PLANFIX_REPLY_TOKEN = process.env.PLANFIX_WEBCHAT_REPLY_TOKEN;
 
 // -----------------------------------------------------------
@@ -191,18 +218,27 @@ app.post('/webhook/planfix', checkSecret, async (req, res) => {
       }
     }
 
-    // Планфикс присылает HTML — переводим в Markdown-разметку
+    // Планфикс присылает HTML — переводим в Markdown-разметку (на случай HTML)
     const cleanMessage = htmlToMarkdown(message);
+    // Пробуем восстановить ссылку в кликабельную форму через entities
+    const { cleanText, entities } = extractLinkEntities(cleanMessage);
 
     // Формируем подпись с именем сотрудника Планфикс:
     // *Имя Фамилия:*
     // Текст сообщения
     const employeeName = [userName, userLastName].filter(Boolean).join(' ').trim();
     const formattedMessage = employeeName
-      ? `*${employeeName}:*${cleanMessage ? '\n' + cleanMessage : ''}`
-      : cleanMessage;
+      ? `*${employeeName}:*${cleanText ? '\n' + cleanText : ''}`
+      : cleanText;
+    // Сдвигаем позиции entities на длину добавленной подписи с именем
+    const prefixLength = formattedMessage.length - cleanText.length;
+    const shiftedEntities = entities.map((e) => ({
+      ...e,
+      start: e.start + prefixLength,
+      end: e.end + prefixLength,
+    }));
 
-    await amo.sendMessageWithAttachments(chatId, formattedMessage, parsedAttachments);
+    await amo.sendMessageWithAttachments(chatId, formattedMessage, parsedAttachments, shiftedEntities);
     console.log('📤 Ответ отправлен пользователю amoMessenger', chatId);
 
     res.status(200).json({ chatId, contactId: chatId });
