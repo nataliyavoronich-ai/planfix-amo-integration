@@ -178,7 +178,29 @@ async function validateToken(accessToken) {
 // -----------------------------------------------------------
 // Получение информации о пользователе
 // -----------------------------------------------------------
-async function getUserInfo(userUuid) {
+// -----------------------------------------------------------
+// Получение полной версии сообщения по ссылке из message.links.self.
+// Нужно, когда сам вебхук приходит "пустым" (без text/entities) —
+// например, для пересланных сообщений amoMessenger почему-то не
+// включает содержимое сразу, только ID и ссылку на полную версию.
+// -----------------------------------------------------------
+async function getMessageDetails(href) {
+  if (!href) return null;
+  try {
+    const url = href.startsWith('http') ? href : `https://api.amo.io${href}`;
+    console.log('🔍 Запрашиваем полную версию сообщения:', url);
+    const res = await axios.get(url, {
+      headers: { Authorization: `Bearer ${getAccessToken()}` },
+    });
+    console.log('📩 Полная версия сообщения:', JSON.stringify(res.data, null, 2));
+    return res.data;
+  } catch (err) {
+    console.error('❌ Не удалось получить полное сообщение:', err.response?.data || err.message);
+    return null;
+  }
+}
+
+
   if (!userUuid) return null;
   try {
     const url = `https://api.amo.io/v1.0/users/${userUuid}`;
@@ -374,6 +396,7 @@ module.exports = {
   exchangeCodeForToken,
   validateToken,
   getUserInfo,
+  getMessageDetails,
   startTokenAutoRefresh,
   refreshAccessTokenManually: refreshAccessToken,
 };
