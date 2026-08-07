@@ -201,6 +201,7 @@ async function getMessageDetails(href) {
 }
 
 
+async function getUserInfo(userUuid) {
   if (!userUuid) return null;
   try {
     const url = `https://api.amo.io/v1.0/users/${userUuid}`;
