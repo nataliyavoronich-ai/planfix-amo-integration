@@ -76,14 +76,29 @@ app.post('/webhook/amomessenger', checkSecret, async (req, res) => {
     const { userId, userName, text, attachments } = amo.parseIncomingMessage(req.body);
 
     let messageText = text;
-    if (!messageText && attachments && attachments.length > 0) {
-      const names = attachments.map((a) => a.name).join(', ');
+    let finalAttachments = attachments;
+
+    // Если сообщение пришло "пустым" (нет ни текста, ни вложений) —
+    // пробуем догрузить полную версию по ссылке self (см. случай
+    // с пересланными сообщениями).
+    const selfHref = req.body?._embedded?.message?.links?.self?.href;
+    if (!messageText && (!finalAttachments || finalAttachments.length === 0) && selfHref) {
+      const full = await amo.getMessageDetails(selfHref);
+      if (full) {
+        const reparsed = amo.parseIncomingMessage({ _embedded: { message: full } });
+        messageText = reparsed.text;
+        finalAttachments = reparsed.attachments;
+      }
+    }
+
+    if (!messageText && finalAttachments && finalAttachments.length > 0) {
+      const names = finalAttachments.map((a) => a.name).join(', ');
       messageText = `Файлы: ${names}`;
     }
 
     console.log('Входящее сообщение от', userId, ':', messageText);
 
-    if (!userId || (!messageText && (!attachments || attachments.length === 0))) {
+    if (!userId || (!messageText && (!finalAttachments || finalAttachments.length === 0))) {
       console.log('Пустое сообщение, игнорируем');
       return res.sendStatus(200);
     }
@@ -100,7 +115,7 @@ app.post('/webhook/amomessenger', checkSecret, async (req, res) => {
       amoUserId: userId,
       amoUserName: realUserName,
       text: messageText,
-      attachments,
+      attachments: finalAttachments,
     });
 
     res.sendStatus(200);
