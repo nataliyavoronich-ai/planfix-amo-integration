@@ -98,9 +98,19 @@ app.post('/webhook/amomessenger', checkSecret, async (req, res) => {
 
     console.log('Входящее сообщение от', userId, ':', messageText);
 
-    if (!userId || (!messageText && (!finalAttachments || finalAttachments.length === 0))) {
-      console.log('Пустое сообщение, игнорируем');
+    if (!userId) {
+      console.log('Нет userId, игнорируем');
       return res.sendStatus(200);
+    }
+
+    // Если и после попытки догрузить полное сообщение всё равно нет
+    // ни текста, ни вложений (известный краевой случай — например,
+    // некоторые пересланные сообщения с превью ссылки) — не молчим,
+    // а сообщаем об этом в Планфикс, чтобы специалист поддержки знал,
+    // что человек что-то прислал, и мог уточнить у него напрямую.
+    if (!messageText && (!finalAttachments || finalAttachments.length === 0)) {
+      console.log('⚠️ Сообщение пришло без содержимого (известный краевой случай amoMessenger)');
+      messageText = '[Пользователь отправил сообщение, содержимое которого не удалось получить — возможно, пересланная ссылка с превью. Уточните у пользователя напрямую.]';
     }
 
     let realUserName = userName;
